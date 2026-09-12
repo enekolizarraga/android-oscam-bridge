@@ -52,6 +52,16 @@ import java.util.concurrent.ConcurrentLinkedDeque
  *
  * Log Tag: OscamCasBridge
  */
+/**
+ * Self-contained CCcam stream cipher state block (cc_crypt).
+ */
+class CcCryptBlock(
+    val keytable: IntArray = IntArray(256),
+    var state: Int = 0,
+    var counter: Int = 0,
+    var sum: Int = 0
+)
+
 class OscamLocalConfigWebServer(
     private val context: Context,
     private val repository: OscamConfigRepository,
@@ -1164,13 +1174,6 @@ class OscamLocalConfigWebServer(
             java.security.MessageDigest.getInstance("SHA-1").digest(data)
 
         // ── CCcam proprietary stream cipher helpers (cc_crypt) ───────────
-        class CcCryptBlock(
-            val keytable: IntArray = IntArray(256),
-            var state: Int = 0,
-            var counter: Int = 0,
-            var sum: Int = 0
-        )
-
         private fun ccInitCrypt(block: CcCryptBlock, key: ByteArray) {
             for (i in 0..255) block.keytable[i] = i
             var j = 0
