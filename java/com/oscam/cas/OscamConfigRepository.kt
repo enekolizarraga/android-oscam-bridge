@@ -90,7 +90,7 @@ data class ProviderPreset(
 }
 
 /**
- * Model representing a server profile (supports both OSCam dvbapi and Newcamd protocols).
+ * Model representing a server profile (supports OSCam dvbapi, Newcamd, and CCcam protocols).
  */
 data class OscamServerEntry(
     val id: String = UUID.randomUUID().toString(),
@@ -102,6 +102,9 @@ data class OscamServerEntry(
     val password: String = "android_tv",
     val desKey: String = "0102030405060708091011121314",
     val caid: Int = 0x1810,
+    val connectTimeoutSec: Int = 4,
+    val recvTimeoutSec: Int = 8,
+    val reconnectIntervalMs: Int = 2000,
     val enabled: Boolean = true,
     val isPrimary: Boolean = true
 )
@@ -469,6 +472,9 @@ class OscamConfigRepository(private val context: Context) {
                 put("password", server.password)
                 put("des_key", server.desKey)
                 put("caid", server.caid)
+                put("connect_timeout_sec", server.connectTimeoutSec)
+                put("recv_timeout_sec", server.recvTimeoutSec)
+                put("reconnect_interval_ms", server.reconnectIntervalMs)
                 put("enabled", server.enabled)
                 put("is_primary", server.isPrimary)
             }
@@ -483,17 +489,21 @@ class OscamConfigRepository(private val context: Context) {
             val array = JSONArray(jsonStr)
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
+                val protoStr = obj.optString("protocol", "DVBAPI")
                 list.add(
                     OscamServerEntry(
                         id = obj.optString("id", UUID.randomUUID().toString()),
                         name = obj.optString("name", "Server ${i + 1}"),
-                        protocol = ServerProtocol.fromString(obj.optString("protocol", "DVBAPI")),
+                        protocol = ServerProtocol.fromString(protoStr),
                         host = obj.optString("host", "192.168.1.100"),
-                        port = obj.optInt("port", 9000),
+                        port = obj.optInt("port", if (protoStr == "NEWCAMD") 10000 else if (protoStr == "CCCAM") 12000 else 9000),
                         user = obj.optString("user", "android_tv"),
                         password = obj.optString("password", "android_tv"),
                         desKey = obj.optString("des_key", "0102030405060708091011121314"),
                         caid = obj.optInt("caid", 0x1810),
+                        connectTimeoutSec = obj.optInt("connect_timeout_sec", 4),
+                        recvTimeoutSec = obj.optInt("recv_timeout_sec", 8),
+                        reconnectIntervalMs = obj.optInt("reconnect_interval_ms", 2000),
                         enabled = obj.optBoolean("enabled", true),
                         isPrimary = obj.optBoolean("is_primary", i == 0)
                     )
@@ -613,6 +623,9 @@ class OscamConfigRepository(private val context: Context) {
                     put("password", s.password)
                     put("des_key", s.desKey)
                     put("caid", s.caid)
+                    put("connect_timeout_sec", s.connectTimeoutSec)
+                    put("recv_timeout_sec", s.recvTimeoutSec)
+                    put("reconnect_interval_ms", s.reconnectIntervalMs)
                     put("enabled", s.enabled)
                     put("is_primary", s.isPrimary)
                 }

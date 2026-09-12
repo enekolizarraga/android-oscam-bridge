@@ -116,8 +116,74 @@ std::optional<ServiceConfig> ConfigWatcher::loadFromFile(const std::string& path
         cfg.oscamPort = static_cast<uint16_t>(*port);
     }
 
-    BRIDGE_LOGI("ConfigWatcher::loadFromFile: Cargada config -> %s:%u",
-                cfg.oscamHost.c_str(), cfg.oscamPort);
+    // Parse "servers" array if present
+    size_t srvArrPos = content.find("\"servers\"");
+    if (srvArrPos != std::string::npos) {
+        size_t startBracket = content.find('[', srvArrPos);
+        size_t endBracket = content.find(']', startBracket);
+        if (startBracket != std::string::npos && endBracket != std::string::npos) {
+            std::string arrContent = content.substr(startBracket, endBracket - startBracket + 1);
+            size_t objStart = 0;
+            while ((objStart = arrContent.find('{', objStart)) != std::string::npos) {
+                size_t objEnd = arrContent.find('}', objStart);
+                if (objEnd == std::string::npos) break;
+                std::string srvStr = arrContent.substr(objStart, objEnd - objStart + 1);
+
+                auto srvStrField = [&srvStr](const std::string& key) -> std::optional<std::string> {
+                    std::string pattern = "\"" + key + "\"";
+                    size_t p = srvStr.find(pattern);
+                    if (p == std::string::npos) return std::nullopt;
+                    p = srvStr.find(':', p);
+                    if (p == std::string::npos) return std::nullopt;
+                    p = srvStr.find('"', p);
+                    if (p == std::string::npos) return std::nullopt;
+                    size_t e = srvStr.find('"', p + 1);
+                    if (e == std::string::npos) return std::nullopt;
+                    return srvStr.substr(p + 1, e - p - 1);
+                };
+
+                auto srvIntField = [&srvStr](const std::string& key) -> std::optional<int> {
+                    std::string pattern = "\"" + key + "\"";
+                    size_t p = srvStr.find(pattern);
+                    if (p == std::string::npos) return std::nullopt;
+                    p = srvStr.find(':', p);
+                    if (p == std::string::npos) return std::nullopt;
+                    size_t valS = srvStr.find_first_of("0123456789", p);
+                    if (valS == std::string::npos) return std::nullopt;
+                    size_t valE = srvStr.find_first_not_of("0123456789", valS);
+                    return std::stoi(srvStr.substr(valS, valE - valS));
+                };
+
+                ServerConfig sc;
+                sc.name = srvStrField("name").value_or("Server");
+                sc.protocol = srvStrField("protocol").value_or("DVBAPI");
+                sc.host = srvStrField("host").value_or("192.168.1.100");
+                sc.port = static_cast<uint16_t>(srvIntField("port").value_or(9000));
+                sc.user = srvStrField("user").value_or("android_tv");
+                sc.password = srvStrField("password").value_or("android_tv");
+                sc.desKey = srvStrField("des_key").value_or("0102030405060708091011121314");
+                sc.caid = static_cast<uint16_t>(srvIntField("caid").value_or(0x1810));
+                sc.connectTimeoutSec = srvIntField("connect_timeout_sec").value_or(4);
+                sc.recvTimeoutSec = srvIntField("recv_timeout_sec").value_or(8);
+                sc.reconnectIntervalMs = srvIntField("reconnect_interval_ms").value_or(2000);
+                sc.isPrimary = (srvStr.find("\"is_primary\":true") != std::string::npos);
+
+                cfg.servers.push_back(sc);
+                objStart = objEnd + 1;
+            }
+        }
+    }
+
+    if (!cfg.servers.empty()) {
+        const auto& active = cfg.servers.front();
+        cfg.oscamHost = active.host;
+        cfg.oscamPort = active.port;
+        BRIDGE_LOGI("ConfigWatcher::loadFromFile: Parsed %zu servers (Active: %s %s:%u)",
+                    cfg.servers.size(), active.protocol.c_str(), active.host.c_str(), active.port);
+    } else {
+        BRIDGE_LOGI("ConfigWatcher::loadFromFile: Loaded fallback config -> %s:%u",
+                    cfg.oscamHost.c_str(), cfg.oscamPort);
+    }
 
     return cfg;
 }

@@ -6,6 +6,8 @@
 #include "include/ConfigWatcher.h"
 #include "../../../chipset/include/ChipsetDetector.h"
 #include "../../../bridge/include/BridgeLogger.h"
+#include "../../../bridge/include/NewcamdClient.h"
+#include "../../../bridge/include/CCcamClient.h"
 
 namespace oscam::hal {
 
@@ -23,18 +25,144 @@ OscamCasService::~OscamCasService() {
     if (dvbapiClient_) {
         dvbapiClient_->stop();
     }
+    if (newcamdClient_) {
+        newcamdClient_->stop();
+    }
+    if (cccamClient_) {
+        cccamClient_->stop();
+    }
     if (chipsetAdapter_) {
         chipsetAdapter_->release();
+    }
+}
+
+void OscamCasService::startNetworkClient() {
+    if (dvbapiClient_) {
+        dvbapiClient_->stop();
+        dvbapiClient_.reset();
+    }
+    if (newcamdClient_) {
+        newcamdClient_->stop();
+        newcamdClient_.reset();
+    }
+    if (cccamClient_) {
+        cccamClient_->stop();
+        cccamClient_.reset();
+    }
+
+    ServerConfig activeSrv;
+    if (!config_.servers.empty()) {
+        activeSrv = config_.servers.front();
+        for (const auto& s : config_.servers) {
+            if (s.isPrimary && s.enabled) {
+                activeSrv = s;
+                break;
+            }
+        }
+    } else {
+        activeSrv.host = config_.oscamHost;
+        activeSrv.port = config_.oscamPort;
+        activeSrv.protocol = "DVBAPI";
+    }
+
+    BLOG_I("[OscamCasService] Conectando cliente protocolo '%s' -> %s:%u (user='%s', timeout=%ds, reconnect=%dms)",
+           activeSrv.protocol.c_str(), activeSrv.host.c_str(), activeSrv.port,
+           activeSrv.user.c_str(), activeSrv.connectTimeoutSec, activeSrv.reconnectIntervalMs);
+
+    if (activeSrv.protocol == "CCCAM") {
+        cccam::CCcamConfig cccamCfg;
+        cccamCfg.host = activeSrv.host;
+        cccamCfg.port = activeSrv.port;
+        cccamCfg.user = activeSrv.user;
+        cccamCfg.password = activeSrv.password;
+        cccamCfg.caid = activeSrv.caid;
+        cccamCfg.connectTimeoutSec = activeSrv.connectTimeoutSec;
+        cccamCfg.recvTimeoutSec = activeSrv.recvTimeoutSec;
+        cccamCfg.reconnectIntervalMs = activeSrv.reconnectIntervalMs;
+
+        cccam::CCcamCallbacks cbs;
+        cbs.onControlWord = [this](uint16_t sid, uint8_t parity, const uint8_t* cw, size_t len) {
+            std::lock_guard<std::mutex> lk(serviceMutex_);
+            dvbapi::CaDescr descr;
+            descr.index = 0;
+            descr.parity = parity;
+            std::memcpy(descr.cw, cw, std::min<size_t>(len, 8));
+            for (auto& plugin : activePlugins_) {
+                plugin->handleControlWord(descr);
+            }
+        };
+        cbs.onConnectionChanged = [](bool connected) {
+            BLOG_I("[OscamCasService] CCcam connection: %s", connected ? "CONECTADO" : "DESCONECTADO");
+        };
+
+        cccamClient_ = std::make_shared<cccam::CCcamClient>(cccamCfg, std::move(cbs));
+        cccamClient_->start();
+    } else if (activeSrv.protocol == "NEWCAMD") {
+        newcamd::NewcamdConfig ncfg;
+        ncfg.host = activeSrv.host;
+        ncfg.port = activeSrv.port;
+        ncfg.user = activeSrv.user;
+        ncfg.password = activeSrv.password;
+        ncfg.desKey = newcamd::NewcamdClient::parseDesKeyHex(activeSrv.desKey);
+        ncfg.caid = activeSrv.caid;
+        ncfg.connectTimeoutSec = activeSrv.connectTimeoutSec;
+        ncfg.recvTimeoutSec = activeSrv.recvTimeoutSec;
+        ncfg.reconnectIntervalMs = activeSrv.reconnectIntervalMs;
+
+        newcamd::NewcamdCallbacks cbs;
+        cbs.onControlWord = [this](uint16_t sid, uint8_t parity, const uint8_t* cw, size_t len) {
+            std::lock_guard<std::mutex> lk(serviceMutex_);
+            dvbapi::CaDescr descr;
+            descr.index = 0;
+            descr.parity = parity;
+            std::memcpy(descr.cw, cw, std::min<size_t>(len, 8));
+            for (auto& plugin : activePlugins_) {
+                plugin->handleControlWord(descr);
+            }
+        };
+        cbs.onConnectionChanged = [](bool connected) {
+            BLOG_I("[OscamCasService] Newcamd connection: %s", connected ? "CONECTADO" : "DESCONECTADO");
+        };
+
+        newcamdClient_ = std::make_shared<newcamd::NewcamdClient>(ncfg, std::move(cbs));
+        newcamdClient_->start();
+    } else {
+        // OSCam DVBAPI (default)
+        dvbapi::ConnectionConfig connCfg;
+        connCfg.host = activeSrv.host;
+        connCfg.port = activeSrv.port;
+        connCfg.connectTimeoutSec = activeSrv.connectTimeoutSec;
+        connCfg.recvTimeoutSec = activeSrv.recvTimeoutSec;
+        connCfg.maxReconnectAttempts = 0;
+        connCfg.initialBackoffMs = 500;
+        connCfg.maxBackoffMs = activeSrv.reconnectIntervalMs > 0 ? activeSrv.reconnectIntervalMs : 30000;
+
+        dvbapi::DvbapiCallbacks callbacks;
+        callbacks.OnCaSetDescr = [this](const dvbapi::CaDescr& descr) {
+            std::lock_guard<std::mutex> lock(serviceMutex_);
+            for (auto& plugin : activePlugins_) {
+                plugin->handleControlWord(descr);
+            }
+        };
+        callbacks.OnConnectionChanged = [](bool connected) {
+            BLOG_I("[OscamCasService] DVBAPI connection: %s", connected ? "CONECTADO" : "DESCONECTADO");
+        };
+        callbacks.OnFatalError = [](const std::string& reason) {
+            BLOG_E("[OscamCasService] Error fatal en conexion dvbapi: %s", reason.c_str());
+        };
+
+        dvbapiClient_ = std::make_shared<dvbapi::DvbapiClient>(connCfg, std::move(callbacks));
+        dvbapiClient_->start();
     }
 }
 
 bool OscamCasService::initialize() {
     BLOG_I("[OscamCasService] Inicializando HAL OSCam CAS...");
 
-    // 1. Detectar el chipset del dispositivo de forma automática
+    // 1. Detectar el chipset del dispositivo de forma automatica
     chipsetAdapter_ = chipset::ChipsetDetector::detect();
     if (!chipsetAdapter_) {
-        BLOG_E("[OscamCasService] Fallo crítico: Dispositivo/SoC no soportado");
+        BLOG_E("[OscamCasService] Fallo critico: Dispositivo/SoC no soportado");
         return false;
     }
 
@@ -46,37 +174,10 @@ bool OscamCasService::initialize() {
         return false;
     }
 
-    // 2. Configurar cliente dvbapi hacia el servidor OSCam
-    dvbapi::ConnectionConfig connCfg;
-    connCfg.host = config_.oscamHost;
-    connCfg.port = config_.oscamPort;
-    connCfg.connectTimeoutSec = 5;
-    connCfg.recvTimeoutSec = 10;
-    connCfg.maxReconnectAttempts = 0; // Reconexión continua en servicio daemon
-    connCfg.initialBackoffMs = 500;
-    connCfg.maxBackoffMs = 30000;
+    // 2. Iniciar cliente de red activo segun configuracion dinamica
+    startNetworkClient();
 
-    dvbapi::DvbapiCallbacks callbacks;
-    callbacks.OnCaSetDescr = [this](const dvbapi::CaDescr& descr) {
-        std::lock_guard<std::mutex> lock(serviceMutex_);
-        for (auto& plugin : activePlugins_) {
-            plugin->handleControlWord(descr);
-        }
-    };
-
-    callbacks.OnConnectionChanged = [](bool connected) {
-        BLOG_I("[OscamCasService] Estado de conexión dvbapi: %s",
-               connected ? "CONECTADO" : "DESCONECTADO");
-    };
-
-    callbacks.OnFatalError = [](const std::string& reason) {
-        BLOG_E("[OscamCasService] Error fatal en conexión dvbapi: %s", reason.c_str());
-    };
-
-    dvbapiClient_ = std::make_shared<dvbapi::DvbapiClient>(connCfg, std::move(callbacks));
-    dvbapiClient_->start();
-
-    // 3. Iniciar monitor de recarga en caliente de configuración sin recompilar
+    // 3. Iniciar monitor de recarga en caliente de configuracion sin recompilar
     configWatcher_ = std::make_shared<ConfigWatcher>(
         "/data/vendor/oscam/config.json",
         [this](const ServiceConfig& newConfig) {
@@ -90,45 +191,10 @@ bool OscamCasService::initialize() {
 
 bool OscamCasService::reloadConfig(const ServiceConfig& newConfig) {
     std::lock_guard<std::mutex> lock(serviceMutex_);
-    BLOG_I("[OscamCasService] Recargando servidor OSCam a %s:%u (sin recompilar)",
-           newConfig.oscamHost.c_str(), newConfig.oscamPort);
+    BLOG_I("[OscamCasService] Recargando configuracion de servidor en caliente (sin recompilar)");
 
-    config_.oscamHost = newConfig.oscamHost;
-    config_.oscamPort = newConfig.oscamPort;
-
-    if (dvbapiClient_) {
-        dvbapiClient_->stop();
-    }
-
-    dvbapi::ConnectionConfig connCfg;
-    connCfg.host = config_.oscamHost;
-    connCfg.port = config_.oscamPort;
-    connCfg.connectTimeoutSec = 5;
-    connCfg.recvTimeoutSec = 10;
-    connCfg.maxReconnectAttempts = 0;
-    connCfg.initialBackoffMs = 500;
-    connCfg.maxBackoffMs = 30000;
-
-    dvbapi::DvbapiCallbacks callbacks;
-    callbacks.OnCaSetDescr = [this](const dvbapi::CaDescr& descr) {
-        std::lock_guard<std::mutex> lk(serviceMutex_);
-        for (auto& plugin : activePlugins_) {
-            plugin->handleControlWord(descr);
-        }
-    };
-
-    callbacks.OnConnectionChanged = [](bool connected) {
-        BLOG_I("[OscamCasService] Estado dvbapi tras recarga en caliente: %s",
-               connected ? "CONECTADO" : "DESCONECTADO");
-    };
-
-    callbacks.OnFatalError = [](const std::string& reason) {
-        BLOG_E("[OscamCasService] Error en cliente recargado: %s", reason.c_str());
-    };
-
-    dvbapiClient_ = std::make_shared<dvbapi::DvbapiClient>(connCfg, std::move(callbacks));
-    dvbapiClient_->start();
-
+    config_ = newConfig;
+    startNetworkClient();
     return true;
 }
 

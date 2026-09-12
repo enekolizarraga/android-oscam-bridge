@@ -16,12 +16,32 @@
 #include <mutex>
 #include <unordered_set>
 
+namespace oscam::newcamd { class NewcamdClient; }
+namespace oscam::cccam { class CCcamClient; }
+
 namespace oscam::hal {
+
+struct ServerConfig {
+    std::string name{"Primary"};
+    std::string protocol{"DVBAPI"}; // DVBAPI, NEWCAMD, CCCAM
+    std::string host{"192.168.1.100"};
+    uint16_t port{9000};
+    std::string user{"android_tv"};
+    std::string password{"android_tv"};
+    std::string desKey{"0102030405060708091011121314"};
+    uint16_t caid{0x1810};
+    int connectTimeoutSec{4};
+    int recvTimeoutSec{8};
+    int reconnectIntervalMs{2000};
+    bool enabled{true};
+    bool isPrimary{true};
+};
 
 struct ServiceConfig {
     std::string oscamHost{"127.0.0.1"};
     uint16_t oscamPort{9000};
     std::vector<uint16_t> supportedCaids{0x0604, 0x1801, 0x0500, 0x0100};
+    std::vector<ServerConfig> servers;
 };
 
 /**
@@ -53,11 +73,15 @@ public:
     }
 
 private:
+    void startNetworkClient();
+
     ServiceConfig config_;
     std::unordered_set<uint16_t> supportedCaids_;
 
     std::shared_ptr<chipset::IChipsetAdapter> chipsetAdapter_;
     std::shared_ptr<dvbapi::DvbapiClient> dvbapiClient_;
+    std::shared_ptr<newcamd::NewcamdClient> newcamdClient_;
+    std::shared_ptr<cccam::CCcamClient> cccamClient_;
     std::vector<std::shared_ptr<OscamCasPlugin>> activePlugins_;
     std::shared_ptr<class ConfigWatcher> configWatcher_;
     mutable std::mutex serviceMutex_;

@@ -558,3 +558,4 @@ bool CCcamClient::testConnection(
 }
 
 } // namespace oscam::cccam
+

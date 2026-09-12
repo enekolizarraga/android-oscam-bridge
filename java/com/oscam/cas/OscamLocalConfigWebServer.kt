@@ -280,6 +280,9 @@ class OscamLocalConfigWebServer(
                                 put("password", s.password)
                                 put("des_key", s.desKey)
                                 put("caid", "0x%04X".format(s.caid))
+                                put("connect_timeout_sec", s.connectTimeoutSec)
+                                put("recv_timeout_sec", s.recvTimeoutSec)
+                                put("reconnect_interval_ms", s.reconnectIntervalMs)
                                 put("enabled", s.enabled)
                                 put("is_primary", s.isPrimary)
                             })
@@ -362,6 +365,9 @@ class OscamLocalConfigWebServer(
                                     password = sObj.optString("password", "android_tv").trim(),
                                     desKey = sObj.optString("des_key", "0102030405060708091011121314").trim(),
                                     caid = parseHexOrDec(sObj.optString("caid", "0x1810")),
+                                    connectTimeoutSec = sObj.optInt("connect_timeout_sec", 4),
+                                    recvTimeoutSec = sObj.optInt("recv_timeout_sec", 8),
+                                    reconnectIntervalMs = sObj.optInt("reconnect_interval_ms", 2000),
                                     enabled = sObj.optBoolean("enabled", true),
                                     isPrimary = sObj.optBoolean("is_primary", i == 0)
                                 )
@@ -684,6 +690,9 @@ class OscamLocalConfigWebServer(
                                 put("password", s.password)
                                 put("des_key", s.desKey)
                                 put("caid", "0x%04X".format(s.caid))
+                                put("connect_timeout_sec", s.connectTimeoutSec)
+                                put("recv_timeout_sec", s.recvTimeoutSec)
+                                put("reconnect_interval_ms", s.reconnectIntervalMs)
                                 put("enabled", s.enabled)
                                 put("is_primary", s.isPrimary)
                             })
@@ -761,11 +770,14 @@ class OscamLocalConfigWebServer(
                                     name = sObj.optString("name", "Server ${i + 1}"),
                                     protocol = ServerProtocol.fromString(protoStr),
                                     host = sObj.optString("host", "192.168.1.100").trim(),
-                                    port = sObj.optInt("port", 9000),
+                                    port = sObj.optInt("port", if (protoStr == "NEWCAMD") 10000 else if (protoStr == "CCCAM") 12000 else 9000),
                                     user = sObj.optString("user", "android_tv").trim(),
                                     password = sObj.optString("password", "android_tv").trim(),
                                     desKey = sObj.optString("des_key", "0102030405060708091011121314").trim(),
                                     caid = parseHexOrDec(sObj.optString("caid", "0x1810")),
+                                    connectTimeoutSec = sObj.optInt("connect_timeout_sec", 4),
+                                    recvTimeoutSec = sObj.optInt("recv_timeout_sec", 8),
+                                    reconnectIntervalMs = sObj.optInt("reconnect_interval_ms", 2000),
                                     enabled = sObj.optBoolean("enabled", true),
                                     isPrimary = sObj.optBoolean("is_primary", i == 0)
                                 )
@@ -1194,6 +1206,8 @@ class OscamLocalConfigWebServer(
         .btn-danger:hover { background: rgba(239, 68, 68, 0.3); }
         .btn-purple { background: var(--accent); color: #FFF; }
         .btn-purple:hover { background: #7C3AED; }
+        .btn-warning { background: #D97706; color: #FFF; }
+        .btn-warning:hover { background: #B45309; }
 
         /* Channel Table */
         .table-container { width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; margin-top: 14px; }
@@ -1218,6 +1232,8 @@ class OscamLocalConfigWebServer(
         }
         .preset-badge:hover { color: #FFF; border-color: var(--primary); background: rgba(59, 130, 246, 0.1); }
         .preset-badge.badge-purple:hover { border-color: var(--accent); background: rgba(139, 92, 246, 0.1); }
+        .preset-badge.badge-green:hover { border-color: var(--success); background: rgba(16, 185, 129, 0.1); }
+        .preset-badge.badge-warning:hover { border-color: var(--warning); background: rgba(245, 158, 11, 0.1); }
 
         /* Terminal Logs */
         .terminal {
@@ -1368,23 +1384,29 @@ class OscamLocalConfigWebServer(
             </div>
         </div>
 
-        <!-- TAB 2: Servers & Providers (OSCam / Newcamd) -->
+        <!-- TAB 2: Servers & Providers (CCcam / OSCam / Newcamd) -->
         <div class="tab-pane" id="tab-servers">
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">Server Profiles &amp; Provider Matrix (OSCam &amp; Newcamd)</div>
-                        <div class="panel-desc">Configure your domestic OSCam receivers or Newcamd servers with failover. No third-party boxes needed.</div>
+                        <div class="panel-title">Server Profiles &amp; Provider Matrix (CCcam, OSCam &amp; Newcamd)</div>
+                        <div class="panel-desc">Configure your domestic CCcam, OSCam or Newcamd servers with dynamic hot-reload. Stored in TV storage without recompiling.</div>
                     </div>
-                    <button type="button" class="btn btn-primary" onclick="addServerCard()">+ Add Custom Server</button>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button type="button" class="btn btn-warning" onclick="addServerCard('CCCAM')">+ Add CCcam Server</button>
+                        <button type="button" class="btn btn-primary" onclick="addServerCard('DVBAPI')">+ Add OSCam Server</button>
+                        <button type="button" class="btn btn-purple" onclick="addServerCard('NEWCAMD')">+ Add Newcamd Server</button>
+                    </div>
                 </div>
 
                 <!-- Provider Quick Templates Toolbar -->
                 <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:18px;">
                     <div style="font-weight:700; font-size:13px; margin-bottom:8px; color:var(--text-main);">⚡ Fast Provider Templates (Click to add configured server profile):</div>
                     <div class="preset-container" style="margin:0;">
-                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('Movistar+ ES', '0x1810', 10001, 'NEWCAMD')">+ 🇪🇸 Movistar+ (0x1810)</span>
-                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('HD+ Germany', '0x1830', 10002, 'NEWCAMD')">+ 🇩🇪 HD+ Astra (0x1830)</span>
+                        <span class="preset-badge badge-warning" onclick="addServerFromPreset('Movistar+ ES (CCcam)', '0x1810', 12000, 'CCCAM')">+ 🇪🇸 Movistar+ CCcam (0x1810)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('Movistar+ ES (Newcamd)', '0x1810', 10001, 'NEWCAMD')">+ 🇪🇸 Movistar+ (0x1810)</span>
+                        <span class="preset-badge badge-warning" onclick="addServerFromPreset('HD+ Germany (CCcam)', '0x1830', 12000, 'CCCAM')">+ 🇩🇪 HD+ CCcam (0x1830)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('HD+ Germany (Newcamd)', '0x1830', 10002, 'NEWCAMD')">+ 🇩🇪 HD+ Astra (0x1830)</span>
                         <span class="preset-badge" onclick="addServerFromPreset('Sky DE', '0x098C', 9000, 'DVBAPI')">+ 🇩🇪 Sky DE (0x098C)</span>
                         <span class="preset-badge" onclick="addServerFromPreset('Sky Italia', '0x09CD', 9000, 'DVBAPI')">+ 🇮🇹 Sky IT (0x09CD)</span>
                         <span class="preset-badge badge-purple" onclick="addServerFromPreset('Tivùsat IT', '0x183E', 10005, 'NEWCAMD')">+ 🇮🇹 Tivùsat (0x183E)</span>
@@ -1736,29 +1758,34 @@ class OscamLocalConfigWebServer(
                 var proto = s.protocol || 'DVBAPI';
                 var isNewcamd = (proto === 'NEWCAMD');
                 var isCccam = (proto === 'CCCAM');
-                var badgeStyle = isCccam ? 'rgba(16,185,129,0.2); color:#6EE7B7; border:1px solid #10B981' :
+                var badgeStyle = isCccam ? 'rgba(217,119,6,0.2); color:#FCD34D; border:1px solid #D97706' :
                                  isNewcamd ? 'rgba(139,92,246,0.2); color:#C4B5FD; border:1px solid #8B5CF6' :
                                  'rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6';
                 card.innerHTML = 
                     '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">' +
                         '<div style="font-weight:700; font-size:14px; color:#FFF;">' + (s.name || 'Server Profile ' + (idx + 1)) + '</div>' +
-                        '<span style="background:' + badgeStyle + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;">' + proto + '</span>' +
+                        '<span class="srv-proto-badge" style="background:' + badgeStyle + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;">' + proto + '</span>' +
                     '</div>' +
                     '<div class="server-fields">' +
                         '<div><label>Profile Name</label><input type="text" class="srv-name" value="' + (s.name || 'Server ' + (idx + 1)) + '"></div>' +
                         '<div><label>Protocol</label><select class="srv-proto" onchange="toggleServerFields(' + idx + ')">' +
+                            '<option value="CCCAM"' + (proto === 'CCCAM' ? ' selected' : '') + '>CCcam 2.3.0</option>' +
                             '<option value="DVBAPI"' + (proto === 'DVBAPI' ? ' selected' : '') + '>OSCam (dvbapi)</option>' +
                             '<option value="NEWCAMD"' + (proto === 'NEWCAMD' ? ' selected' : '') + '>Newcamd v5.25</option>' +
-                            '<option value="CCCAM"' + (proto === 'CCCAM' ? ' selected' : '') + '>CCcam 2.3.0</option>' +
                         '</select></div>' +
                         '<div><label>Host / IP Address</label><input type="text" class="srv-host" value="' + (s.host || '192.168.1.100') + '"></div>' +
                         '<div><label>Port</label><input type="number" class="srv-port" value="' + (s.port || (isCccam ? 12000 : (isNewcamd ? 10000 : 9000))) + '"></div>' +
                         '<div><label>Username</label><input type="text" class="srv-user" value="' + (s.user || 'android_tv') + '"></div>' +
                     '</div>' +
-                    '<div class="newcamd-extra-' + idx + '" style="margin-top:12px; display:' + (isNewcamd || isCccam ? 'grid' : 'none') + '; grid-template-columns: 1.5fr 2.5fr 1fr; gap:12px;">' +
+                    '<div class="newcamd-extra-' + idx + '" style="margin-top:12px; display:' + (isNewcamd || isCccam ? 'grid' : 'none') + '; grid-template-columns: 1.5fr ' + (isNewcamd ? '2fr ' : '') + '1fr; gap:12px;">' +
                         '<div><label>Password</label><input type="text" class="srv-pass" value="' + (s.password || 'android_tv') + '"></div>' +
                         '<div class="srv-des-div-' + idx + '" style="display:' + (isNewcamd ? 'block' : 'none') + ';"><label>DES Key (14 bytes hex)</label><input type="text" class="srv-des" value="' + (s.des_key || '0102030405060708091011121314') + '"></div>' +
                         '<div><label>Target CAID</label><input type="text" class="srv-caid" value="' + (s.caid || '0x1810') + '"></div>' +
+                    '</div>' +
+                    '<div style="margin-top:12px; display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; background:rgba(255,255,255,0.02); padding:10px 14px; border-radius:8px; border:1px solid rgba(255,255,255,0.05);">' +
+                        '<div><label style="font-size:11px; color:#94A3B8;">Connect Timeout (s)</label><input type="number" class="srv-conn-timeout" value="' + (s.connect_timeout_sec || 4) + '"></div>' +
+                        '<div><label style="font-size:11px; color:#94A3B8;">Recv Timeout (s)</label><input type="number" class="srv-recv-timeout" value="' + (s.recv_timeout_sec || 8) + '"></div>' +
+                        '<div><label style="font-size:11px; color:#94A3B8;">Reconnect Interval (ms)</label><input type="number" class="srv-recon-interval" value="' + (s.reconnect_interval_ms || 2000) + '"></div>' +
                     '</div>' +
                     '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:10px;">' +
                         '<div class="hint" id="ping-status-' + idx + '" style="margin:0;">Ready</div>' +
@@ -1777,13 +1804,26 @@ class OscamLocalConfigWebServer(
             var portInput = card.querySelector('.srv-port');
             var extra = card.querySelector('.newcamd-extra-' + idx);
             var desDiv = card.querySelector('.srv-des-div-' + idx);
+            var badgeEl = card.querySelector('.srv-proto-badge');
+            if (badgeEl) {
+                badgeEl.innerText = proto;
+                badgeEl.style.background = (proto === 'CCCAM') ? 'rgba(217,119,6,0.2)' : (proto === 'NEWCAMD') ? 'rgba(139,92,246,0.2)' : 'rgba(59,130,246,0.2)';
+                badgeEl.style.color = (proto === 'CCCAM') ? '#FCD34D' : (proto === 'NEWCAMD') ? '#C4B5FD' : '#93C5FD';
+                badgeEl.style.border = (proto === 'CCCAM') ? '1px solid #D97706' : (proto === 'NEWCAMD') ? '1px solid #8B5CF6' : '1px solid #3B82F6';
+            }
             if (proto === 'CCCAM') {
                 if (portInput.value === '9000' || portInput.value === '10000') portInput.value = '12000';
-                if (extra) extra.style.display = 'grid';
+                if (extra) {
+                    extra.style.display = 'grid';
+                    extra.style.gridTemplateColumns = '1.5fr 1fr';
+                }
                 if (desDiv) desDiv.style.display = 'none';
             } else if (proto === 'NEWCAMD') {
                 if (portInput.value === '9000' || portInput.value === '12000') portInput.value = '10000';
-                if (extra) extra.style.display = 'grid';
+                if (extra) {
+                    extra.style.display = 'grid';
+                    extra.style.gridTemplateColumns = '1.5fr 2fr 1fr';
+                }
                 if (desDiv) desDiv.style.display = 'block';
             } else {
                 if (portInput.value === '10000' || portInput.value === '12000') portInput.value = '9000';
@@ -1791,39 +1831,49 @@ class OscamLocalConfigWebServer(
             }
         }
 
-        function addServerCard() {
+        function addServerCard(proto) {
+            proto = proto || 'CCCAM';
+            var defaultPort = (proto === 'CCCAM') ? 12000 : (proto === 'NEWCAMD' ? 10000 : 9000);
             var s = {
-                name: 'Server ' + (currentServers.length + 1),
-                protocol: 'DVBAPI',
-                host: '192.168.1.150',
-                port: 9000,
+                name: (proto === 'CCCAM' ? 'CCcam ' : proto === 'NEWCAMD' ? 'Newcamd ' : 'OSCam ') + (currentServers.length + 1),
+                protocol: proto,
+                host: '192.168.1.100',
+                port: defaultPort,
                 user: 'android_tv',
                 password: 'android_tv',
                 des_key: '0102030405060708091011121314',
                 caid: '0x1810',
+                connect_timeout_sec: 4,
+                recv_timeout_sec: 8,
+                reconnect_interval_ms: 2000,
                 enabled: true,
-                is_primary: false
+                is_primary: (currentServers.length === 0)
             };
             currentServers.push(s);
             renderServerCards(currentServers);
         }
 
         function addServerFromPreset(name, caid, port, proto) {
+            proto = proto || 'CCCAM';
+            var defaultPort = (proto === 'CCCAM') ? 12000 : (proto === 'NEWCAMD' ? 10000 : 9000);
             var s = {
                 name: name,
-                protocol: proto || 'DVBAPI',
-                host: '192.168.1.150',
-                port: port || 9000,
+                protocol: proto,
+                host: '192.168.1.100',
+                port: port || defaultPort,
                 user: 'android_tv',
                 password: 'android_tv',
                 des_key: '0102030405060708091011121314',
                 caid: caid,
+                connect_timeout_sec: 4,
+                recv_timeout_sec: 8,
+                reconnect_interval_ms: 2000,
                 enabled: true,
                 is_primary: (currentServers.length === 0)
             };
             currentServers.push(s);
             renderServerCards(currentServers);
-            showAlert('✓ Added server profile for ' + name + ' (' + proto + ' Port ' + port + ', CAID ' + caid + ')', 'success');
+            showAlert('✓ Added server profile for ' + name + ' (' + proto + ' Port ' + (port || defaultPort) + ', CAID ' + caid + ')', 'success');
         }
 
         function removeServerCard(idx) {
@@ -1992,16 +2042,25 @@ class OscamLocalConfigWebServer(
                 var passEl = card.querySelector('.srv-pass');
                 var desEl = card.querySelector('.srv-des');
                 var caidEl = card.querySelector('.srv-caid');
+                var connTimeoutEl = card.querySelector('.srv-conn-timeout');
+                var recvTimeoutEl = card.querySelector('.srv-recv-timeout');
+                var reconIntervalEl = card.querySelector('.srv-recon-interval');
+
+                var protoVal = protoEl ? protoEl.value : 'DVBAPI';
+                var defaultPort = (protoVal === 'CCCAM') ? 12000 : (protoVal === 'NEWCAMD' ? 10000 : 9000);
 
                 servers.push({
                     name: card.querySelector('.srv-name').value,
-                    protocol: protoEl ? protoEl.value : 'DVBAPI',
+                    protocol: protoVal,
                     host: card.querySelector('.srv-host').value,
-                    port: parseInt(card.querySelector('.srv-port').value, 10) || 9000,
+                    port: parseInt(card.querySelector('.srv-port').value, 10) || defaultPort,
                     user: card.querySelector('.srv-user').value,
                     password: passEl ? passEl.value : 'android_tv',
                     des_key: desEl ? desEl.value : '0102030405060708091011121314',
                     caid: caidEl ? caidEl.value : '0x1810',
+                    connect_timeout_sec: connTimeoutEl ? (parseInt(connTimeoutEl.value, 10) || 4) : 4,
+                    recv_timeout_sec: recvTimeoutEl ? (parseInt(recvTimeoutEl.value, 10) || 8) : 8,
+                    reconnect_interval_ms: reconIntervalEl ? (parseInt(reconIntervalEl.value, 10) || 2000) : 2000,
                     enabled: true,
                     is_primary: (idx === 0)
                 });

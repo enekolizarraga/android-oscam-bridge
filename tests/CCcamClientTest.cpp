@@ -165,3 +165,4 @@ TEST(CCcamClientLifecycleTest, TestConnectionFailsGracefullyOnInvalidTarget) {
     EXPECT_FALSE(ok);
     EXPECT_FALSE(error.empty());
 }
+

@@ -130,3 +130,4 @@ private:
 };
 
 } // namespace oscam::cccam
+
