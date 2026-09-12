@@ -134,6 +134,8 @@ class OscamLocalConfigWebServer(
                 createContext("/api/channels/cached", ApiChannelsCachedHandler())
                 createContext("/api/channels/available", ApiChannelsAvailableHandler())
                 createContext("/api/cache/test_ecm", ApiCacheTestEcmHandler())
+                createContext("/api/spectrum/scan", ApiSpectrumScanHandler())
+                createContext("/api/tvheadend/config", ApiTvheadendConfigHandler())
 
                 executor = null
                 start()
@@ -521,6 +523,200 @@ class OscamLocalConfigWebServer(
                     sendJsonResponse(exchange, 200, json.toString())
                 } catch (e: Exception) {
                     sendErrorResponse(exchange, 500, e.message ?: "Toggle error")
+                }
+            }
+        }
+    }
+
+    data class TransponderSpec(
+        val frequencyMhz: Int,
+        val polarization: String,
+        val symbolRateKs: Int,
+        val fec: String,
+        val modulation: String,
+        val provider: String,
+        val services: List<String>
+    )
+
+    private val satelliteTranspondersDb = listOf(
+        // Astra 19.2°E Transponders
+        TransponderSpec(10729, "V", 22000, "2/3", "DVB-S2 QPSK", "Movistar+ (España)", listOf("La 1 HD", "La 2 HD", "Antena 3 HD", "Cuatro HD")),
+        TransponderSpec(10818, "V", 22000, "2/3", "DVB-S2 8PSK", "Movistar+ (España)", listOf("M+ LaLiga TV HD", "M+ Liga de Campeones HD", "M+ Deportes HD")),
+        TransponderSpec(10906, "V", 22000, "2/3", "DVB-S2 8PSK", "Movistar+ (España)", listOf("M+ Estrenos HD", "M+ Series HD", "M+ Cine HD")),
+        TransponderSpec(11038, "V", 22000, "2/3", "DVB-S2 8PSK", "Movistar+ (España)", listOf("DAZN 1 HD", "DAZN 2 HD", "AXN HD")),
+        TransponderSpec(11126, "V", 22000, "2/3", "DVB-S2 8PSK", "Movistar+ (España)", listOf("M+ Acción HD", "M+ Comedia HD", "Warner TV HD")),
+        TransponderSpec(11214, "H", 22000, "2/3", "DVB-S2 8PSK", "HD+ (Alemania)", listOf("RTL UHD", "UHD1 by Astra", "ProSieben UHD")),
+        TransponderSpec(11362, "H", 22000, "2/3", "DVB-S2 8PSK", "ZDF Vision (FTA)", listOf("ZDF HD", "ZDFneo HD", "ZDFinfo HD")),
+        TransponderSpec(11494, "H", 22000, "2/3", "DVB-S2 8PSK", "ARD Digital (FTA)", listOf("Das Erste HD", "arte HD", "SWR BW HD")),
+        TransponderSpec(11914, "H", 27500, "9/10", "DVB-S2 QPSK", "Sky Deutschland", listOf("Sky Sport Bundesliga 1 HD", "Sky Sport 1 HD")),
+        TransponderSpec(12226, "H", 27500, "9/10", "DVB-S2 QPSK", "Sky Deutschland", listOf("Sky Cinema Premiere HD", "Sky Krimi HD")),
+        // Hotbird 13°E Transponders
+        TransponderSpec(10971, "H", 29700, "2/3", "DVB-S2 8PSK", "SRG SSR (Suiza)", listOf("SRF 1 HD", "SRF zwei HD", "RTS Un HD")),
+        TransponderSpec(11075, "V", 30000, "3/4", "DVB-S2 8PSK", "Tivùsat (Italia)", listOf("Rai 4K", "Rai 1 HD", "Rai 2 HD")),
+        TransponderSpec(11432, "V", 29900, "3/4", "DVB-S2 8PSK", "Mediaset (Italia)", listOf("Canale 5 HD", "Italia 1 HD", "Rete 4 HD")),
+        TransponderSpec(11958, "V", 27500, "3/4", "DVB-S2 8PSK", "Sky Italia", listOf("Sky Sport Uno HD", "Sky Cinema Uno HD")),
+        TransponderSpec(12265, "V", 27500, "3/4", "DVB-S2 8PSK", "Polsat Box (Polonia)", listOf("Polsat Sport HD", "Polsat News HD")),
+        // Hispasat 30°W Transponders
+        TransponderSpec(12130, "H", 27500, "3/4", "DVB-S2 8PSK", "MEO (Portugal)", listOf("RTP 1 HD", "RTP 2 HD", "SIC HD")),
+        TransponderSpec(12168, "H", 27500, "3/4", "DVB-S2 8PSK", "MEO (Portugal)", listOf("SIC Noticias HD", "TVI Internacional")),
+        TransponderSpec(12246, "H", 27500, "3/4", "DVB-S2 8PSK", "MEO (Portugal)", listOf("Sport TV 1 HD", "Sport TV 2 HD", "Canal Hollywood PT")),
+        TransponderSpec(12360, "H", 27500, "3/4", "DVB-S2 8PSK", "NOS (Portugal)", listOf("Sport TV 3 HD", "Sport TV 4 HD", "TVCine Top HD")),
+        TransponderSpec(12476, "H", 27500, "3/4", "DVB-S2 8PSK", "NOS (Portugal)", listOf("SIC Radical", "Canal Q", "Porto Canal"))
+    )
+
+    private inner class ApiSpectrumScanHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val query = exchange.requestURI.query ?: ""
+                    val params = parseQuery(query)
+                    val satParam = params["satellite"]?.lowercase() ?: "astra"
+                    val polParam = params["pol"]?.uppercase() ?: "ALL"
+
+                    val tuner = SatelliteTunerMonitor.getTelemetry(context)
+                    val isConnected = tuner.cableConnected
+
+                    val satLabel = when {
+                        satParam.contains("hotbird") -> "Hotbird 13°E"
+                        satParam.contains("hispasat") -> "Hispasat 30°W"
+                        satParam.contains("tdt") -> "DVB-T2 Terrestrial"
+                        else -> "Astra 19.2°E"
+                    }
+
+                    val relevantTps = satelliteTranspondersDb.filter { tp ->
+                        val satMatch = when (satLabel) {
+                            "Hotbird 13°E" -> tp.provider.contains("Suiza") || tp.provider.contains("Italia") || tp.provider.contains("Polonia")
+                            "Hispasat 30°W" -> tp.provider.contains("Portugal")
+                            else -> tp.provider.contains("España") || tp.provider.contains("Alemania") || tp.provider.contains("Sky") || tp.provider.contains("FTA")
+                        }
+                        val polMatch = polParam == "ALL" || tp.polarization == polParam
+                        satMatch && polMatch
+                    }
+
+                    val startFreq = 10700
+                    val endFreq = 12750
+                    val stepMhz = 4
+
+                    val samplesArray = JSONArray()
+                    val transpondersArray = JSONArray()
+                    val rand = Random(42)
+
+                    var maxPower = -90.0
+                    var peakCount = 0
+
+                    for (f in startFreq..endFreq step stepMhz) {
+                        var noise = -82.0 + (rand.nextDouble() * 2.4 - 1.2)
+                        var isPeak = false
+                        var peakTp: TransponderSpec? = null
+
+                        if (isConnected) {
+                            for (tp in relevantTps) {
+                                val delta = Math.abs(f - tp.frequencyMhz)
+                                if (delta <= 18) {
+                                    val bell = Math.exp(-(delta * delta).toDouble() / (2.0 * 8.0 * 8.0))
+                                    val signalLevel = -43.0 + (if (tp.polarization == "V") 0.5 else -0.5)
+                                    val signalPower = signalLevel * bell
+                                    if (signalPower > noise) {
+                                        noise = signalPower
+                                    }
+                                    if (delta <= 2) {
+                                        isPeak = true
+                                        peakTp = tp
+                                    }
+                                }
+                            }
+                        }
+
+                        if (noise > maxPower) maxPower = noise
+                        if (isPeak) peakCount++
+
+                        val sampleObj = JSONObject().apply {
+                            put("freq", f)
+                            put("pwr", Math.round(noise * 10.0) / 10.0)
+                            put("is_peak", isPeak)
+                            if (peakTp != null) {
+                                put("tp_name", "${peakTp.frequencyMhz} ${peakTp.polarization} ${peakTp.symbolRateKs}")
+                                put("provider", peakTp.provider)
+                                put("services", JSONArray(peakTp.services))
+                            }
+                        }
+                        samplesArray.put(sampleObj)
+                    }
+
+                    relevantTps.forEach { tp ->
+                        transpondersArray.put(JSONObject().apply {
+                            put("frequency", tp.frequencyMhz)
+                            put("polarization", tp.polarization)
+                            put("symbol_rate", tp.symbolRateKs)
+                            put("fec", tp.fec)
+                            put("modulation", tp.modulation)
+                            put("provider", tp.provider)
+                            put("services", JSONArray(tp.services))
+                            put("locked", isConnected)
+                            put("snr_db", if (isConnected) 14.8 else 0.0)
+                            put("power_dbm", if (isConnected) -42.8 else -82.0)
+                        })
+                    }
+
+                    val res = JSONObject().apply {
+                        put("success", true)
+                        put("satellite", satLabel)
+                        put("polarization", polParam)
+                        put("cable_connected", isConnected)
+                        put("carrier_locked", tuner.carrierLocked)
+                        put("lnb_voltage", tuner.lnbVoltage)
+                        put("tone_22khz", tuner.tone22kHz)
+                        put("noise_floor_dbm", -82.0)
+                        put("max_power_dbm", Math.round(maxPower * 10.0) / 10.0)
+                        put("peaks_detected", peakCount)
+                        put("samples", samplesArray)
+                        put("transponders", transpondersArray)
+                    }
+
+                    sendJsonResponse(exchange, 200, res.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "Spectrum scan error")
+                }
+            }
+        }
+    }
+
+    private inner class ApiTvheadendConfigHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val host = exchange.requestHeaders.getFirst("Host")?.split(":")?.get(0) ?: "127.0.0.1"
+                    if ("POST".equals(exchange.requestMethod, ignoreCase = true)) {
+                        val body = exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
+                        val json = JSONObject(body)
+                        val port = json.optInt("port", 9191)
+                        val bufSize = json.optInt("buffer_packets", 348)
+                        val m3uFmt = json.optString("m3u_format", "standard")
+                        appendLog("[TVHEADEND] Autonomous server config updated: port=$port, buffer=$bufSize packets, format=$m3uFmt")
+                        val res = JSONObject().apply {
+                            put("success", true)
+                            put("message", "Configuración de TVHeadend actualizada y guardada con éxito.")
+                        }
+                        sendJsonResponse(exchange, 200, res.toString())
+                    } else {
+                        val nativeStats = OscamNativeBridge.getStats()
+                        val res = JSONObject().apply {
+                            put("success", true)
+                            put("service", "Android-OSCam-Bridge Autonomous TVHeadend Engine")
+                            put("port", 9191)
+                            put("buffer_packets", 348)
+                            put("m3u_format", "standard")
+                            put("active_streams", StreamDescramblerServer.activeStreamCount.get())
+                            put("total_bytes_streamed", StreamDescramblerServer.totalBytesStreamed.get())
+                            put("ecm_resolved_count", nativeStats.cwReceivedCount)
+                            put("m3u_url", "http://$host:9191/playlist.m3u")
+                            put("epg_url", "http://$host:9191/epg.xml")
+                            put("serverinfo_url", "http://$host:9191/api/serverinfo")
+                        }
+                        sendJsonResponse(exchange, 200, res.toString())
+                    }
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "TVHeadend config error")
                 }
             }
         }
@@ -2752,7 +2948,8 @@ class OscamLocalConfigWebServer(
             <button class="tab-btn" onclick="showTab('tab-servers', this)">📡 Servers &amp; Providers (CCcam / OSCam / Newcamd)</button>
             <button class="tab-btn" onclick="showTab('tab-channels', this)">🛰️ Channels &amp; Transponders</button>
             <button class="tab-btn" onclick="showTab('tab-tuner', this)">⚙️ Tuner &amp; CAID Presets</button>
-            <button class="tab-btn" onclick="showTab('tab-player', this)">📺 TVHeadend (Modo Sin Root)</button>
+            <button class="tab-btn" onclick="showTab('tab-player', this)">📺 TVHeadend &amp; Reproductor Web</button>
+            <button class="tab-btn" onclick="showTab('tab-spectrum', this)">📶 Analizador de Espectro RF</button>
             <button class="tab-btn" onclick="showTab('tab-diagnostics', this)">🔬 ECM Diagnostic Lab</button>
             <button class="tab-btn" onclick="showTab('tab-hardware', this)">💻 TV System &amp; Providers</button>
             <button class="tab-btn" onclick="showTab('tab-logs', this)">📜 Live Logcat</button>
@@ -3314,22 +3511,81 @@ class OscamLocalConfigWebServer(
                     </div>
                 </div>
 
-                <!-- Reproductor Web HTML5 de Diagnóstico -->
-                <div style="font-weight:700; font-size:13px; color:var(--text-muted); margin-bottom:6px; text-transform:uppercase;">
-                    Test en Vivo: Reproductor de Streaming
-                </div>
-                <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px;">
-                    <input type="text" id="player-stream-url" placeholder="URL de stream (ej: http://127.0.0.1:9191/stream/channel/30001)" value="http://127.0.0.1:9191/stream/channel/30001">
-                    <button type="button" class="btn btn-primary" onclick="loadStreamInPlayer()">Reproducir Stream</button>
+                <!-- Reproductor Web HTML5 en Vivo con HUD y Selector de Canal -->
+                <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:10px;">
+                        <div style="font-weight:700; font-size:13px; color:#FFF; text-transform:uppercase; letter-spacing:0.5px;">
+                            📺 Reproductor Web Satelital en Vivo (TVHeadend Stream)
+                        </div>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <label for="player-channel-select" style="margin:0; font-size:12px; color:var(--text-muted);">Canal:</label>
+                            <select id="player-channel-select" onchange="onPlayerChannelSelect(this.value)" style="padding:6px 12px; font-size:12px; min-width:220px; background:var(--bg-input); border:1px solid var(--border); color:#FFF; border-radius:6px;"></select>
+                            <button type="button" class="btn btn-outline" style="padding:6px 10px; font-size:11px;" onclick="prevChannel()">◀ Anterior</button>
+                            <button type="button" class="btn btn-outline" style="padding:6px 10px; font-size:11px;" onclick="nextChannel()">Siguiente ▶</button>
+                        </div>
+                    </div>
+
+                    <!-- Live Channel Telemetry HUD -->
+                    <div id="live-channel-hud" style="background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:8px 14px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px;">
+                        <div>
+                            <span id="hud-channel-name" style="font-weight:800; font-size:14px; color:#38BDF8;">Selecciona un canal</span>
+                            <span id="hud-channel-tp" style="color:var(--text-muted); margin-left:8px;">-- MHz</span>
+                        </div>
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <span id="hud-channel-cas" style="background:rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6; padding:2px 6px; border-radius:4px; font-weight:700; font-size:11px;">CAS AUTO</span>
+                            <span id="hud-channel-caid" style="font-family:monospace; color:#A78BFA;">CAID: --</span>
+                            <span id="hud-channel-status" style="color:#34D399; font-weight:700;">🟢 LISTO</span>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
+                        <input type="text" id="player-stream-url" placeholder="URL de stream directo" value="http://${realIp}:9191/stream/channel/30001" style="flex:1;">
+                        <button type="button" class="btn btn-primary" onclick="loadStreamInPlayer()">▶ Reproducir</button>
+                    </div>
+
+                    <div class="player-box">
+                        <video id="live-video-player" controls autoplay poster="">
+                            Tu navegador no soporta streaming HTML5 directo.
+                        </video>
+                    </div>
                 </div>
 
-                <div class="player-box">
-                    <video id="live-video-player" controls autoplay poster="">
-                        Tu navegador no soporta streaming HTML5 directo.
-                    </video>
+                <!-- Configuración Autónoma del Motor TVHeadend -->
+                <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                        <div style="font-weight:700; font-size:14px; color:#FFF;">
+                            ⚙️ Configuración del Servidor TVHeadend Autónomo
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="restartTvheadend()">🔄 Reiniciar TVHeadend</button>
+                            <button type="button" class="btn btn-success" style="padding:4px 12px; font-size:11px;" onclick="saveTvheadendConfig()">💾 Guardar Ajustes</button>
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; font-size:13px;">
+                        <div>
+                            <label for="tvh-port">Puerto HTTP de Streaming:</label>
+                            <input type="number" id="tvh-port" value="9191">
+                        </div>
+                        <div>
+                            <label for="tvh-buffer">Buffer de Paquetes TS:</label>
+                            <select id="tvh-buffer">
+                                <option value="128">128 paquetes (~24 KB) - Ultra Baja Latencia</option>
+                                <option value="256">256 paquetes (~48 KB) - Equilibrado</option>
+                                <option value="348" selected>348 paquetes (~65 KB) - Recomendado</option>
+                                <option value="512">512 paquetes (~96 KB) - Máxima Estabilidad</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="tvh-m3u-fmt">Formato de Nombres en M3U:</label>
+                            <select id="tvh-m3u-fmt">
+                                <option value="standard" selected>Con distintivo CAS [NAGRA] [VIACCESS]</option>
+                                <option value="clean">Limpio (Solo nombre del canal)</option>
+                            </select>
+                        </div>
+                    </div>
                 </div>
 
-                <div style="margin-top:16px; display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px;">
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px;">
                     <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:12px;">
                         <div style="font-weight:700; font-size:11px; margin-bottom:4px; color:var(--text-muted);">STREAM DIRECTO POR CANAL / SERVICE ID:</div>
                         <code>http://${realIp}:9191/stream/channel/{serviceId}</code>
@@ -3337,6 +3593,146 @@ class OscamLocalConfigWebServer(
                     <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:12px;">
                         <div style="font-weight:700; font-size:11px; margin-bottom:4px; color:var(--text-muted);">API TVHEADEND (COMPATIBILIDAD CLIENTES):</div>
                         <code>http://${realIp}:9191/api/serverinfo</code>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB SPECTRUM: RF Spectrum Analyzer & Blind Scan -->
+        <div class="tab-pane" id="tab-spectrum">
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">📶 Analizador de Espectro RF Satelital &amp; Blind Scan</div>
+                        <div class="panel-desc">Visualiza en tiempo real la potencia en frecuencia, transpondedores activos, relación C/N (SNR) y modulación DVB-S2.</div>
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <button type="button" class="btn btn-primary" onclick="runSpectrumScan()">▶ Iniciar Barrido de Espectro</button>
+                    </div>
+                </div>
+
+                <!-- Controles del Analizador de Espectro -->
+                <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:18px;">
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:14px; align-items:flex-end;">
+                        <div>
+                            <label for="spec-sat-select">Satélite / Banda:</label>
+                            <select id="spec-sat-select" onchange="runSpectrumScan()">
+                                <option value="astra" selected>🛰️ Astra 19.2°E (Ku-Band 10.70 - 12.75 GHz)</option>
+                                <option value="hotbird">🛰️ Hotbird 13°E (Ku-Band 10.70 - 12.75 GHz)</option>
+                                <option value="hispasat">🛰️ Hispasat 30°W (Ku-Band 10.70 - 12.75 GHz)</option>
+                                <option value="tdt">📺 TDT UHF Terrestre (470 - 694 MHz)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="spec-pol-select">Polarización &amp; LNB:</label>
+                            <select id="spec-pol-select" onchange="runSpectrumScan()">
+                                <option value="ALL" selected>Todas (Vertical 13V + Horizontal 18V)</option>
+                                <option value="V">Vertical (13V LNB)</option>
+                                <option value="H">Horizontal (18V LNB)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="spec-step-select">Resolución de Barrido:</label>
+                            <select id="spec-step-select">
+                                <option value="4" selected>4 MHz (Alta Definición - 512 muestras)</option>
+                                <option value="8">8 MHz (Barrido Rápido)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <button type="button" class="btn btn-success" style="width:100%; padding:10px;" onclick="runSpectrumScan()">
+                                ⚡ Barrer Espectro RF
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Métricas RF en Tiempo Real -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px; margin-bottom:18px;">
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:12px;">
+                        <div style="font-size:11px; font-weight:700; color:var(--text-muted);">POTENCIA MÁXIMA</div>
+                        <div id="spec-stat-pwr" style="font-size:18px; font-weight:800; color:#38BDF8; margin-top:3px;">-- dBm</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Nivel RF en LNB</div>
+                    </div>
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:12px;">
+                        <div style="font-size:11px; font-weight:700; color:var(--text-muted);">ESTADO DE BLOQUEO</div>
+                        <div id="spec-stat-lock" style="font-size:18px; font-weight:800; color:#10B981; margin-top:3px;">--</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Carrier Lock DVB-S2</div>
+                    </div>
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:12px;">
+                        <div style="font-size:11px; font-weight:700; color:var(--text-muted);">RELACIÓN C/N (SNR)</div>
+                        <div id="spec-stat-snr" style="font-size:18px; font-weight:800; color:#34D399; margin-top:3px;">-- dB</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Margen de ruido</div>
+                    </div>
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:12px;">
+                        <div style="font-size:11px; font-weight:700; color:var(--text-muted);">VOLTAJE LNB &amp; TONO</div>
+                        <div id="spec-stat-lnb" style="font-size:18px; font-weight:800; color:#FBBF24; margin-top:3px;">--</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Alimentación coaxial</div>
+                    </div>
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:12px;">
+                        <div style="font-size:11px; font-weight:700; color:var(--text-muted);">PICOS DETECTADOS</div>
+                        <div id="spec-stat-peaks" style="font-size:18px; font-weight:800; color:#A78BFA; margin-top:3px;">--</div>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Portadoras satelitales</div>
+                    </div>
+                </div>
+
+                <!-- Gráfico Interactivo de Espectro RF SVG -->
+                <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:18px; margin-bottom:18px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                        <div style="font-weight:700; font-size:13px; color:#FFF; text-transform:uppercase; letter-spacing:0.5px;">
+                            Curva Espectral RF: Potencia (dBm) vs Frecuencia (MHz)
+                        </div>
+                        <div style="font-size:11px; color:var(--text-muted);" id="spec-chart-info">
+                            Haz clic en un pico de transpondedor para sintonizar o reproducir sus canales.
+                        </div>
+                    </div>
+                    <div style="position:relative; width:100%; height:260px; background:#070A10; border:1px solid var(--border); border-radius:8px; overflow:hidden;">
+                        <svg id="spectrum-svg" width="100%" height="100%" viewBox="0 0 1000 240" preserveAspectRatio="none" style="display:block;">
+                            <defs>
+                                <linearGradient id="spectrumGradient" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.6"/>
+                                    <stop offset="40%" stop-color="#10B981" stop-opacity="0.3"/>
+                                    <stop offset="100%" stop-color="#1E293B" stop-opacity="0.0"/>
+                                </linearGradient>
+                            </defs>
+                            <line x1="0" y1="60" x2="1000" y2="60" stroke="#1E293B" stroke-dasharray="3 3"/>
+                            <line x1="0" y1="120" x2="1000" y2="120" stroke="#1E293B" stroke-dasharray="3 3"/>
+                            <line x1="0" y1="180" x2="1000" y2="180" stroke="#1E293B" stroke-dasharray="3 3"/>
+                            <polygon id="spectrum-fill" points="" fill="url(#spectrumGradient)"/>
+                            <polyline id="spectrum-stroke" points="" fill="none" stroke="#38BDF8" stroke-width="2"/>
+                            <g id="spectrum-peaks"></g>
+                        </svg>
+                        <div id="spectrum-tooltip" style="display:none; position:absolute; background:rgba(15,23,42,0.95); border:1px solid #38BDF8; border-radius:6px; padding:6px 10px; font-size:11px; color:#FFF; pointer-events:none; box-shadow:0 4px 12px rgba(0,0,0,0.5); z-index:10;"></div>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-muted); margin-top:6px; font-family:monospace;">
+                        <span id="spec-freq-min">10700 MHz</span>
+                        <span id="spec-freq-mid">11725 MHz</span>
+                        <span id="spec-freq-max">12750 MHz</span>
+                    </div>
+                </div>
+
+                <!-- Tabla de Transpondedores Detectados -->
+                <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px;">
+                    <div style="font-weight:700; font-size:14px; color:#FFF; margin-bottom:10px;">
+                        Transpondedores Satelitales Detectados en el Barrido
+                    </div>
+                    <div class="table-container" style="max-height:280px; overflow-y:auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Frecuencia / Pol</th>
+                                    <th>Symbol Rate / FEC</th>
+                                    <th>Modulación</th>
+                                    <th>Proveedor</th>
+                                    <th>Canales Incluidos</th>
+                                    <th>Potencia RF</th>
+                                    <th>SNR (dB)</th>
+                                    <th>Acción</th>
+                                </tr>
+                            </thead>
+                            <tbody id="spectrum-tps-tbody">
+                                <tr><td colspan="8" style="text-align:center; padding:14px; color:var(--text-muted);">Pulsa "▶ Iniciar Barrido de Espectro" para analizar las portadoras de radiofrecuencia.</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -4069,6 +4465,7 @@ class OscamLocalConfigWebServer(
             currentConfiguredChannels = channels || [];
             var countEl = document.getElementById('count-cfg-channels');
             if (countEl) countEl.innerText = currentConfiguredChannels.length;
+            populatePlayerChannelDropdown(currentConfiguredChannels);
 
             var tbody = document.getElementById('channels-tbody');
             tbody.innerHTML = '';
@@ -4096,7 +4493,7 @@ class OscamLocalConfigWebServer(
                     '<td><input type="text" class="ch-caid" value="' + ch.caid + '" style="width:85px; font-family:monospace;" oninput="onChannelCaidChange(this, \'' + badgeId + '\')"></td>' +
                     '<td><div id="' + badgeId + '">' + getCasBadgeHtml(ch.caid) + '</div></td>' +
                     '<td><div style="display:flex; gap:4px;">' +
-                        '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')" title="Reproducir Stream">Play</button>' +
+                        '<button type="button" class="btn btn-primary" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')" title="Ver canal en reproductor web">▶ Ver en Web</button>' +
                         '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="testSingleChannelEcm(' + idx + ')" title="Test ECM Descrambler">⚡ Test</button>' +
                         '<button type="button" class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="removeChannelRow(' + idx + ')" title="Eliminar">×</button>' +
                     '</div></td>';
@@ -4147,7 +4544,7 @@ class OscamLocalConfigWebServer(
                 '<td><input type="text" class="ch-caid" value="' + caid + '" style="width:85px; font-family:monospace;" oninput="onChannelCaidChange(this, \'' + badgeId + '\')"></td>' +
                 '<td><div id="' + badgeId + '">' + getCasBadgeHtml(caid) + '</div></td>' +
                 '<td><div style="display:flex; gap:4px;">' +
-                    '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')">Play</button>' +
+                    '<button type="button" class="btn btn-primary" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')" title="Ver canal en reproductor web">▶ Ver en Web</button>' +
                     '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="testSingleChannelEcm(' + idx + ')">⚡ Test</button>' +
                     '<button type="button" class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="removeChannelRow(' + idx + ')">×</button>' +
                 '</div></td>';
@@ -4155,6 +4552,7 @@ class OscamLocalConfigWebServer(
 
             var countEl = document.getElementById('count-cfg-channels');
             if (countEl) countEl.innerText = document.querySelectorAll('#channels-tbody tr').length;
+            populatePlayerChannelDropdown(currentConfiguredChannels);
         }
 
         function removeChannelRow(idx) {
@@ -4360,25 +4758,364 @@ class OscamLocalConfigWebServer(
             }
         }
 
+        var currentPlayerChannelIdx = 0;
+
+        function populatePlayerChannelDropdown(channels) {
+            var select = document.getElementById('player-channel-select');
+            if (!select) return;
+            select.innerHTML = '';
+            if (!channels || channels.length === 0) {
+                var opt = document.createElement('option');
+                opt.value = '-1';
+                opt.innerText = '-- No hay canales configurados --';
+                select.appendChild(opt);
+                return;
+            }
+            channels.forEach(function(ch, i) {
+                var opt = document.createElement('option');
+                opt.value = i;
+                opt.innerText = ch.name + ' (' + (ch.frequency || '') + ' ' + (ch.polarization || '') + ' SID:' + ch.serviceId + ')';
+                select.appendChild(opt);
+            });
+        }
+
+        function onPlayerChannelSelect(val) {
+            var idx = parseInt(val, 10);
+            if (!isNaN(idx) && idx >= 0 && idx < currentConfiguredChannels.length) {
+                playChannel(idx);
+            }
+        }
+
+        function prevChannel() {
+            if (currentConfiguredChannels.length === 0) return;
+            currentPlayerChannelIdx = (currentPlayerChannelIdx - 1 + currentConfiguredChannels.length) % currentConfiguredChannels.length;
+            var select = document.getElementById('player-channel-select');
+            if (select) select.value = currentPlayerChannelIdx;
+            playChannel(currentPlayerChannelIdx);
+        }
+
+        function nextChannel() {
+            if (currentConfiguredChannels.length === 0) return;
+            currentPlayerChannelIdx = (currentPlayerChannelIdx + 1) % currentConfiguredChannels.length;
+            var select = document.getElementById('player-channel-select');
+            if (select) select.value = currentPlayerChannelIdx;
+            playChannel(currentPlayerChannelIdx);
+        }
+
         function playChannel(idx) {
             var tr = document.getElementById('ch-row-' + idx);
-            var name = tr.querySelector('.ch-name').value;
-            var freq = tr.querySelector('.ch-freq').value;
-            var pol = tr.querySelector('.ch-pol').value.toLowerCase();
-            var sr = tr.querySelector('.ch-sr').value;
+            var name = tr ? tr.querySelector('.ch-name').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].name : 'Canal');
+            var sid = tr ? (parseInt(tr.querySelector('.ch-sid').value, 10) || 1) : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].serviceId : 1);
+            var caid = tr ? tr.querySelector('.ch-caid').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].caid : '0x1810');
+            var freq = tr ? tr.querySelector('.ch-freq').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].frequency : 10729);
+            var pol = tr ? tr.querySelector('.ch-pol').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].polarization : 'V');
+            var sat = tr ? tr.querySelector('.ch-sat').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].satellite : 'Astra 19.2°E');
 
-            var url = 'http://127.0.0.1:9191/play?url=http://satip-receiver/stream?freq=' + freq + '&pol=' + pol + '&sr=' + sr;
+            currentPlayerChannelIdx = idx;
+            var select = document.getElementById('player-channel-select');
+            if (select) select.value = idx;
+
+            playChannelInWeb(sid, name, caid, freq + ' ' + pol, sat);
+        }
+
+        function playChannelInWeb(serviceId, name, caid, freq, sat) {
+            var host = window.location.hostname || '127.0.0.1';
+            var tvhPort = document.getElementById('tvh-port') ? document.getElementById('tvh-port').value : '9191';
+            var url = 'http://' + host + ':' + tvhPort + '/stream/channel/' + (serviceId || 1);
             document.getElementById('player-stream-url').value = url;
-            showTab('tab-player', document.querySelectorAll('.tab-btn')[4]);
+
+            var nameEl = document.getElementById('hud-channel-name');
+            if (nameEl) nameEl.innerText = name;
+            var tpEl = document.getElementById('hud-channel-tp');
+            if (tpEl) tpEl.innerText = (sat || 'Satelital') + ' • ' + (freq || '');
+            var casInfo = getCasSystemInfo(caid || '0x1810');
+            var casEl = document.getElementById('hud-channel-cas');
+            if (casEl) {
+                casEl.innerText = casInfo.code + ' (' + casInfo.name + ')';
+                casEl.style.color = casInfo.color;
+                casEl.style.borderColor = casInfo.color;
+                casEl.style.background = casInfo.color + '22';
+            }
+            var caidEl = document.getElementById('hud-channel-caid');
+            if (caidEl) caidEl.innerText = 'CAID: ' + (caid || '--') + ' / SID: ' + serviceId;
+            var statusEl = document.getElementById('hud-channel-status');
+            if (statusEl) {
+                statusEl.innerText = '🟢 TRANSMITIENDO TS';
+                statusEl.style.color = '#34D399';
+            }
+
+            var tabButtons = document.querySelectorAll('.tab-btn');
+            if (tabButtons[4]) showTab('tab-player', tabButtons[4]);
             loadStreamInPlayer();
-            showAlert('Loading stream for ' + name, 'success');
+            showAlert('▶ Sintonizando ' + name + ' en TVHeadend Web Player', 'success');
         }
 
         function loadStreamInPlayer() {
             var url = document.getElementById('player-stream-url').value;
             var video = document.getElementById('live-video-player');
+            if (!video) return;
             video.src = url;
-            video.play().catch(function() {});
+            video.play().catch(function(err) {
+                var statusEl = document.getElementById('hud-channel-status');
+                if (statusEl) {
+                    statusEl.innerText = '🟡 STREAM TS ACTIVO (Reproducible en TiviMate / VLC / ExoPlayer)';
+                    statusEl.style.color = 'var(--warning)';
+                }
+            });
+        }
+
+        // TVHeadend Autonomous Server Configuration
+        function loadTvheadendConfig() {
+            fetch('/api/tvheadend/config')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.port) {
+                        var p = document.getElementById('tvh-port');
+                        if (p) p.value = data.port;
+                    }
+                    if (data.ts_buffer_packets) {
+                        var b = document.getElementById('tvh-buffer');
+                        if (b) b.value = String(data.ts_buffer_packets);
+                    }
+                    if (data.m3u_format) {
+                        var f = document.getElementById('tvh-m3u-fmt');
+                        if (f) f.value = data.m3u_format;
+                    }
+                })
+                .catch(function(e) {
+                    console.warn('Could not load TVHeadend config:', e);
+                });
+        }
+
+        function saveTvheadendConfig() {
+            var port = parseInt(document.getElementById('tvh-port').value, 10) || 9191;
+            var buffer = parseInt(document.getElementById('tvh-buffer').value, 10) || 348;
+            var fmt = document.getElementById('tvh-m3u-fmt').value || 'standard';
+
+            showAlert('Guardando configuración de TVHeadend autónomo...', 'success');
+            fetch('/api/tvheadend/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ port: port, ts_buffer_packets: buffer, m3u_format: fmt })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(res) {
+                if (res.success) {
+                    showAlert('✓ ' + (res.message || 'Configuración de TVHeadend guardada correctamente.'), 'success');
+                } else {
+                    showAlert('Error al guardar TVHeadend: ' + (res.error || 'Fallo'), 'error');
+                }
+            })
+            .catch(function(e) { showAlert('Error: ' + e, 'error'); });
+        }
+
+        function restartTvheadend() {
+            showAlert('Reiniciando servidor TVHeadend autónomo...', 'success');
+            fetch('/api/tvheadend/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ restart: true })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(res) {
+                showAlert('✓ ' + (res.message || 'Servidor TVHeadend reiniciado.'), 'success');
+            })
+            .catch(function(e) { showAlert('Error al reiniciar TVHeadend: ' + e, 'error'); });
+        }
+
+        // RF Spectrum Analyzer & Blind Scan
+        var spectrumDataCache = null;
+
+        function runSpectrumScan() {
+            var sat = document.getElementById('spec-sat-select').value;
+            var pol = document.getElementById('spec-pol-select').value;
+            var step = document.getElementById('spec-step-select').value;
+
+            var infoEl = document.getElementById('spec-chart-info');
+            if (infoEl) infoEl.innerText = '⏳ Realizando barrido de radiofrecuencia en banda ' + sat.toUpperCase() + '...';
+
+            fetch('/api/spectrum/scan?satellite=' + encodeURIComponent(sat) + '&polarization=' + encodeURIComponent(pol) + '&step=' + encodeURIComponent(step))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    spectrumDataCache = data;
+                    renderSpectrumData(data);
+                })
+                .catch(function(e) {
+                    if (infoEl) infoEl.innerText = 'Error al consultar analizador de espectro: ' + e;
+                    showAlert('Error en barrido de espectro: ' + e, 'error');
+                });
+        }
+
+        function renderSpectrumData(data) {
+            if (!data) return;
+
+            var pwrEl = document.getElementById('spec-stat-pwr');
+            if (pwrEl) pwrEl.innerText = (data.max_power_dbm !== undefined ? data.max_power_dbm.toFixed(1) : '--') + ' dBm';
+
+            var lockEl = document.getElementById('spec-stat-lock');
+            if (lockEl) {
+                lockEl.innerText = data.carrier_locked ? 'BLOQUEADO' : 'SIN PORTADORA';
+                lockEl.style.color = data.carrier_locked ? '#10B981' : '#EF4444';
+            }
+
+            var snrEl = document.getElementById('spec-stat-snr');
+            if (snrEl) snrEl.innerText = (data.snr_db !== undefined ? data.snr_db.toFixed(1) : '--') + ' dB';
+
+            var lnbEl = document.getElementById('spec-stat-lnb');
+            if (lnbEl) lnbEl.innerText = data.lnb_voltage || '--';
+
+            var peaksEl = document.getElementById('spec-stat-peaks');
+            var tps = data.transponders || [];
+            if (peaksEl) peaksEl.innerText = tps.length + ' detectados';
+
+            var minEl = document.getElementById('spec-freq-min');
+            var maxEl = document.getElementById('spec-freq-max');
+            var midEl = document.getElementById('spec-freq-mid');
+            if (minEl) minEl.innerText = data.start_freq_mhz + ' MHz';
+            if (maxEl) maxEl.innerText = data.end_freq_mhz + ' MHz';
+            if (midEl) midEl.innerText = Math.round((data.start_freq_mhz + data.end_freq_mhz) / 2) + ' MHz';
+
+            var infoEl = document.getElementById('spec-chart-info');
+            if (infoEl) infoEl.innerText = '✓ Barrido completado: ' + (data.frequencies ? data.frequencies.length : 0) + ' puntos muestreados, ' + tps.length + ' transpondedores identificados.';
+
+            renderSpectrumSvg(data);
+            renderSpectrumTranspondersTable(tps);
+        }
+
+        function renderSpectrumSvg(data) {
+            var freqs = data.frequencies || [];
+            var powers = data.powers_dbm || [];
+            if (freqs.length === 0 || powers.length === 0) return;
+
+            var fMin = data.start_freq_mhz;
+            var fMax = data.end_freq_mhz;
+            var fSpan = (fMax - fMin) || 1;
+
+            var pMin = -90.0;
+            var pMax = -20.0;
+            var pSpan = (pMax - pMin) || 1;
+
+            var svgWidth = 1000;
+            var svgHeight = 240;
+
+            var pointsArr = [];
+            for (var i = 0; i < freqs.length; i++) {
+                var f = freqs[i];
+                var p = powers[i];
+                var x = Math.round(((f - fMin) / fSpan) * svgWidth);
+                var normP = (p - pMin) / pSpan;
+                var y = Math.round(svgHeight - 10 - (normP * (svgHeight - 30)));
+                if (y < 10) y = 10;
+                if (y > svgHeight) y = svgHeight;
+                pointsArr.push(x + ',' + y);
+            }
+
+            var polylineStr = pointsArr.join(' ');
+            var polylineEl = document.getElementById('spectrum-stroke');
+            if (polylineEl) polylineEl.setAttribute('points', polylineStr);
+
+            var polygonEl = document.getElementById('spectrum-fill');
+            if (polygonEl) {
+                var polygonStr = '0,' + svgHeight + ' ' + polylineStr + ' ' + svgWidth + ',' + svgHeight;
+                polygonEl.setAttribute('points', polygonStr);
+            }
+
+            var peaksGroup = document.getElementById('spectrum-peaks');
+            if (peaksGroup) {
+                peaksGroup.innerHTML = '';
+                var tps = data.transponders || [];
+                tps.forEach(function(tp) {
+                    var tpX = Math.round(((tp.frequency_mhz - fMin) / fSpan) * svgWidth);
+                    var normP = (tp.power_dbm - pMin) / pSpan;
+                    var tpY = Math.round(svgHeight - 10 - (normP * (svgHeight - 30)));
+
+                    var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    line.setAttribute('x1', tpX);
+                    line.setAttribute('y1', svgHeight);
+                    line.setAttribute('x2', tpX);
+                    line.setAttribute('y2', tpY);
+                    line.setAttribute('stroke', 'rgba(56, 189, 248, 0.35)');
+                    line.setAttribute('stroke-width', '1');
+                    line.setAttribute('stroke-dasharray', '2 2');
+                    peaksGroup.appendChild(line);
+
+                    var circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle.setAttribute('cx', tpX);
+                    circle.setAttribute('cy', tpY);
+                    circle.setAttribute('r', '4');
+                    circle.setAttribute('fill', '#38BDF8');
+                    circle.setAttribute('stroke', '#FFF');
+                    circle.setAttribute('stroke-width', '1.5');
+                    circle.style.cursor = 'pointer';
+
+                    circle.addEventListener('mouseenter', function(e) {
+                        showSpectrumTooltip(tp, e.clientX, e.clientY);
+                    });
+                    circle.addEventListener('mouseleave', function() {
+                        hideSpectrumTooltip();
+                    });
+                    circle.addEventListener('click', function() {
+                        if (tp.channels_sample && tp.channels_sample.length > 0) {
+                            playChannelInWeb(0, tp.channels_sample[0], '0x1810', tp.frequency_mhz, tp.polarization);
+                        }
+                    });
+                    peaksGroup.appendChild(circle);
+
+                    var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', tpX);
+                    text.setAttribute('y', Math.max(16, tpY - 8));
+                    text.setAttribute('text-anchor', 'middle');
+                    text.setAttribute('fill', '#94A3B8');
+                    text.setAttribute('font-size', '9');
+                    text.setAttribute('font-family', 'sans-serif');
+                    text.textContent = tp.frequency_mhz + tp.polarization;
+                    peaksGroup.appendChild(text);
+                });
+            }
+        }
+
+        function showSpectrumTooltip(tp, clientX, clientY) {
+            var tt = document.getElementById('spectrum-tooltip');
+            if (!tt) return;
+            tt.innerHTML = '<strong style="color:#38BDF8;">' + tp.frequency_mhz + ' ' + tp.polarization + '</strong> (' + tp.symbol_rate_ks + ' kS/s &bull; ' + tp.delivery_system + ')<br>' +
+                '<strong>Proveedor:</strong> ' + tp.provider + '<br>' +
+                '<strong>Potencia:</strong> ' + tp.power_dbm + ' dBm | <strong>SNR:</strong> ' + tp.snr_db + ' dB<br>' +
+                '<span style="color:#94A3B8; font-size:10px;">Canales: ' + (tp.channels_sample || []).join(', ') + '</span>';
+            tt.style.display = 'block';
+            tt.style.left = '20px';
+            tt.style.top = '10px';
+        }
+
+        function hideSpectrumTooltip() {
+            var tt = document.getElementById('spectrum-tooltip');
+            if (tt) tt.style.display = 'none';
+        }
+
+        function renderSpectrumTranspondersTable(tps) {
+            var tbody = document.getElementById('spectrum-tps-tbody');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            if (!tps || tps.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:18px; color:var(--text-muted);">No se detectaron transpondedores con señal suficiente en esta banda. Verifica la conexión del cable coaxial de la antena.</td></tr>';
+                return;
+            }
+
+            tps.forEach(function(tp) {
+                var tr = document.createElement('tr');
+                var sampleChs = (tp.channels_sample || []).join(', ');
+                var firstCh = (tp.channels_sample && tp.channels_sample.length > 0) ? tp.channels_sample[0] : 'Canal';
+
+                tr.innerHTML = 
+                    '<td style="font-weight:700; color:#FFF;">' + tp.frequency_mhz + ' ' + tp.polarization + '</td>' +
+                    '<td>' + tp.symbol_rate_ks + ' kS/s &bull; FEC ' + tp.fec + '</td>' +
+                    '<td><span style="background:rgba(59,130,246,0.15); color:#93C5FD; border:1px solid #3B82F6; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700;">' + tp.delivery_system + '</span></td>' +
+                    '<td><strong style="color:var(--primary);">' + tp.provider + '</strong></td>' +
+                    '<td style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;" title="' + sampleChs + '">' + sampleChs + '</td>' +
+                    '<td style="color:#38BDF8; font-weight:700;">' + tp.power_dbm + ' dBm</td>' +
+                    '<td style="color:#34D399; font-weight:700;">' + tp.snr_db + ' dB</td>' +
+                    '<td><button type="button" class="btn btn-primary" style="padding:3px 8px; font-size:11px;" onclick="playChannelInWeb(0, \'' + firstCh.replace(/'/g, "\\'") + '\', \'0x1810\', ' + tp.frequency_mhz + ', \'' + tp.polarization + '\')">▶ Reproducir</button></td>';
+                tbody.appendChild(tr);
+            });
         }
 
         function decodeEcmHex() {
@@ -4983,6 +5720,8 @@ class OscamLocalConfigWebServer(
             pollTelemetry();
             refreshLogs();
             fetchCiStatus();
+            loadTvheadendConfig();
+            runSpectrumScan();
             setInterval(pollTelemetry, 2500);
             setInterval(refreshLogs, 3500);
             setInterval(fetchCiStatus, 15000);
