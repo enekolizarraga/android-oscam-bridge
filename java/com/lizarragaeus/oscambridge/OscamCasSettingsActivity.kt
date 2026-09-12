@@ -254,16 +254,31 @@ open class OscamCasSettingsActivity : AppCompatActivity() {
 
         val caidList = repository.parseCaidsCsv(caidsCsv)
 
-        val newConfig = OscamConfig(
-            serverHost = host,
-            serverPort = port,
-            username = user,
-            deliverySystem = selectedSystem,
-            caids = caidList,
-            autoStartOnBoot = autostart
-        )
-
         lifecycleScope.launch {
+            val current = repository.getCurrentConfig()
+            val existingPrimary = current.primaryServer
+            val updatedPrimary = existingPrimary.copy(
+                host = host,
+                port = port,
+                user = user
+            )
+            val updatedServers = current.servers.toMutableList()
+            val primaryIdx = updatedServers.indexOfFirst { it.isPrimary }
+            if (primaryIdx >= 0) {
+                updatedServers[primaryIdx] = updatedPrimary
+            } else if (updatedServers.isNotEmpty()) {
+                updatedServers[0] = updatedPrimary
+            } else {
+                updatedServers.add(updatedPrimary)
+            }
+
+            val newConfig = current.copy(
+                servers = updatedServers,
+                deliverySystem = selectedSystem,
+                caids = caidList,
+                autoStartOnBoot = autostart
+            )
+
             repository.saveConfig(newConfig)
             Toast.makeText(this@OscamCasSettingsActivity, "Configuration saved", Toast.LENGTH_SHORT).show()
 

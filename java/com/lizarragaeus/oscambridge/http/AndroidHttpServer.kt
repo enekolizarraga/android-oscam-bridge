@@ -96,6 +96,16 @@ class HttpExchange(
         val sb = StringBuilder()
         sb.append("HTTP/1.1 ").append(rCode).append(" ").append(getStatusText(rCode)).append("\r\n")
 
+        if (!responseHeaders.containsKey("Access-Control-Allow-Origin")) {
+            responseHeaders.set("Access-Control-Allow-Origin", "*")
+        }
+        if (!responseHeaders.containsKey("Access-Control-Allow-Methods")) {
+            responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+        }
+        if (!responseHeaders.containsKey("Access-Control-Allow-Headers")) {
+            responseHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, *")
+        }
+
         for ((key, values) in responseHeaders) {
             for (v in values) {
                 sb.append(key).append(": ").append(v).append("\r\n")
@@ -245,6 +255,13 @@ class HttpServer private constructor(private val address: InetSocketAddress) {
             }
         }
 
+        if (method.equals("OPTIONS", ignoreCase = true)) {
+            val exchange = HttpExchange(socket, method, uri, requestHeaders, BoundedInputStream(rawIn, 0))
+            exchange.sendResponseHeaders(204, 0)
+            exchange.responseBody.close()
+            return
+        }
+
         val contentLength = requestHeaders.getFirst("Content-Length")?.toLongOrNull() ?: 0L
         val requestBody = BoundedInputStream(rawIn, contentLength)
 
@@ -303,15 +320,17 @@ class HttpServer private constructor(private val address: InetSocketAddress) {
         private var bytesRead: Long = 0
 
         override fun read(): Int {
-            if (maxBytes >= 0 && bytesRead >= maxBytes) return -1
+            if (maxBytes > 0 && bytesRead >= maxBytes) return -1
+            if (maxBytes == 0L && wrapped.available() <= 0) return -1
             val b = wrapped.read()
             if (b != -1) bytesRead++
             return b
         }
 
         override fun read(b: ByteArray, off: Int, len: Int): Int {
-            if (maxBytes >= 0 && bytesRead >= maxBytes) return -1
-            val maxToRead = if (maxBytes >= 0) minOf(len.toLong(), maxBytes - bytesRead).toInt() else len
+            if (maxBytes > 0 && bytesRead >= maxBytes) return -1
+            if (maxBytes == 0L && wrapped.available() <= 0) return -1
+            val maxToRead = if (maxBytes > 0) minOf(len.toLong(), maxBytes - bytesRead).toInt() else len
             if (maxToRead <= 0) return -1
             val count = wrapped.read(b, off, maxToRead)
             if (count != -1) bytesRead += count
@@ -320,7 +339,7 @@ class HttpServer private constructor(private val address: InetSocketAddress) {
 
         override fun available(): Int {
             val avail = wrapped.available()
-            return if (maxBytes >= 0) minOf(avail.toLong(), maxBytes - bytesRead).toInt() else avail
+            return if (maxBytes > 0) minOf(avail.toLong(), maxBytes - bytesRead).toInt() else avail
         }
 
         override fun close() {

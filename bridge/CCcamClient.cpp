@@ -221,7 +221,7 @@ bool CCcamClient::isConnected() const {
 
 bool CCcamClient::readFull(int socketFd, uint8_t* buffer, size_t count) {
     size_t total = 0;
-    while (total < count && running_.load()) {
+    while (total < count) {
         int r = recv(socketFd, reinterpret_cast<char*>(buffer + total), static_cast<int>(count - total), 0);
         if (r <= 0) {
             return false;
@@ -233,7 +233,7 @@ bool CCcamClient::readFull(int socketFd, uint8_t* buffer, size_t count) {
 
 bool CCcamClient::writeFull(int socketFd, const uint8_t* buffer, size_t count) {
     size_t total = 0;
-    while (total < count && running_.load()) {
+    while (total < count) {
         int s = send(socketFd, reinterpret_cast<const char*>(buffer + total), static_cast<int>(count - total), 0);
         if (s <= 0) {
             return false;

@@ -2694,10 +2694,15 @@ class OscamLocalConfigWebServer(
             })
             .then(function(r) { return r.json(); })
             .then(function(res) {
-                showAlert('✓ Configuration successfully saved and hot-reloaded across daemon and HAL!', 'success');
+                if (res.success) {
+                    showAlert('✓ ' + (res.message || 'Configuration successfully saved and hot-reloaded!'), 'success');
+                    loadConfiguration();
+                } else {
+                    showAlert('✗ Error saving configuration: ' + (res.error || res.message || 'Save error'), 'error');
+                }
             })
             .catch(function(e) {
-                showAlert('✗ Error saving configuration: ' + e, 'error');
+                showAlert('✗ Network error saving configuration: ' + e, 'error');
             });
         }
 
