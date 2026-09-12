@@ -363,3 +363,79 @@ cmake --build build_host -j$(nproc)
 cd build_host && ctest --output-on-failure
 ```
 
+---
+
+## 11. Troubleshooting & Frequently Asked Questions (FAQ)
+
+### Diagnostic Checklist
+Before troubleshooting specific issues, run through this 5-point verification checklist:
+
+1. **Verify Network Reachability**:
+   ```bash
+   adb shell ping -c 3 <OSCAM_SERVER_IP>
+   ```
+2. **Verify OSCam dvbapi Listening Port**:
+   On your OSCam server:
+   ```bash
+   netstat -tlpn | grep 9000
+   # Expected: tcp 0 0 0.0.0.0:9000 0.0.0.0:* LISTEN
+   ```
+3. **Verify CAS HAL Daemon Process**:
+   ```bash
+   adb shell ps -A | grep oscam
+   # Expected: vendor.oscam.cas-service
+   ```
+4. **Verify Shared Configuration Directory**:
+   ```bash
+   adb shell ls -la /data/vendor/oscam/config.json
+   ```
+5. **Check SELinux Status**:
+   ```bash
+   adb shell getenforce
+   ```
+
+---
+
+### Common Issues and Solutions
+
+#### Q1: Web Console or App shows `DISCONNECTED (Connection Refused)`
+- **Cause**: OSCam server is not listening on TCP, firewall is blocking port 9000, or `oscam.conf` has `boxtype` misconfigured.
+- **Solution**:
+  1. Open `oscam.conf` on your server and confirm:
+     ```ini
+     [dvbapi]
+     enabled     = 1
+     listen_port = 9000
+     boxtype     = pc
+     ```
+  2. If using UFW/iptables, open port 9000: `sudo ufw allow 9000/tcp`.
+  3. Use the **"Ping"** button in Web Console Pro (`http://<TV_IP>:8080`) to test network reachability.
+
+#### Q2: Video remains scrambled on a specific satellite channel
+- **Cause**: The satellite transponder PMT contains a CAID that is not in your active CAID list.
+- **Solution**:
+  1. Open `adb logcat -s OscamCasBridge` and tune the channel.
+  2. Look for the PMT log entry:
+     ```text
+     I OscamCasBridge: PMT Satellite Prog=30001: CA Descriptor -> CAID=0x1810, ECM_PID=0x0400
+     ```
+  3. If the CAID is missing from your configuration, open Web Console Pro (`http://<TV_IP>:8080`), click the corresponding **CAID Preset** button (e.g. `+ Movistar+ (0x1810)`), and click **"Save & Apply"**.
+
+#### Q3: `ioctl failed: Permission denied` in logcat
+- **Cause**: SELinux in `Enforcing` mode is preventing the HAL daemon from accessing the hardware descrambler character device (e.g. `/dev/amstream_mpps` on Amlogic or `/dev/mtk_ca0` on MediaTek).
+- **Solution**:
+  1. Test temporarily with `adb shell setenforce 0`. If video immediately decrypts, apply the SELinux policy from [Section 8](#8-selinux-policy-sepolicy-checklist).
+  2. For Magisk users, place the rules in `/data/adb/modules/oscam-cas/sepolicy.rule`.
+
+#### Q4: Screen displays video smoothly, but audio is silent or encrypted
+- **Cause**: Some DVB-S2 broadcasters scramble audio with a different ECM PID than the video PID.
+- **Solution**:
+  The bridge automatically parses all Elementary Stream (ES) descriptors in the PMT loop. Ensure your OSCam user account has `au = 1` and `group` permissions to descramble secondary streams.
+
+#### Q5: External Stream Proxy (`:9191`) drops packets or stutters in VLC
+- **Cause**: Network buffer underrun from the SAT>IP receiver or insufficient read timeout.
+- **Solution**:
+  In VLC or Kodi, increase the network cache buffer to 1000ms:
+  `vlc --network-caching=1000 "http://<TV_IP>:9191/play?url=..."`.
+
+
