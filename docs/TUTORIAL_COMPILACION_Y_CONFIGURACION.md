@@ -80,9 +80,9 @@ Este software está protegido bajo los términos de la licencia internacional **
 > [!CAUTION]
 > **PROHIBIDA SU VENTA O COMERCIALIZACIÓN**: Este código fuente y sus binarios resultantes **NO pueden venderse, revenderse, empaquetarse con fines comerciales ni utilizarse en servicios de pago**. 
 > Si utilizas, modificas o redistribuyes este código, **debes otorgar créditos de manera obligatoria y visible** a:
-> **Autor original:** Eneko Lizarraga (`enekolizarraga`)  
+> **Autor original:** Eneko Lizarraga (`lizarragaeus`)  
 > **Identificador de paquete:** `com.lizarragaeus.oscambridge`  
-> Consulta el archivo [`LICENSE.md`](LICENSE.md) para más detalles legales.
+> Consulta el archivo [`LICENSE.md`](file:///c:/Users/lizarragapc/Documents/android-oscam-bridge/LICENSE.md) para más detalles legales.
 
 ---
 
@@ -108,7 +108,7 @@ El motor nativo de descodificación y los clientes de red residen en `bridge/`, 
 #### En Linux / macOS (o WSL2 en Windows):
 ```bash
 # 1. Clonar el repositorio y entrar en el directorio
-git clone https://github.com/enekolizarraga/android-oscam-bridge.git
+git clone https://github.com/lizarragaeus/android-oscam-bridge.git
 cd android-oscam-bridge
 
 # 2. Configurar la compilación cruzada con el NDK para arquitectura ARM64 (Android TV)
@@ -454,3 +454,4 @@ emmcache                      = 1,3,2,0
 
 ### P: ¿Dónde puedo consultar los registros (logs) en tiempo real?
 **R:** En la consola web (`http://<IP_TELE>:8080`), accede a la pestaña **"📜 Live Logcat"** para ver los eventos del bridge en directo con colores de diagnóstico y opción de descarga del archivo `.log`.
+
