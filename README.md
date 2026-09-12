@@ -351,38 +351,6 @@ adb reboot
 ### 3. Configure via Web Browser
 Open `http://<TV_IP>:8080` on your smartphone or computer, verify your server's IP, port, and protocol (OSCam DVBAPI, Newcamd v5.25, or CCcam), click **"Test Connection"**, and click **"Save & Apply"**.
 
----
-
-## GitHub Repository & Publishing Guide
-
-To publish this project to your GitHub account:
-
-1. **Create a new empty repository on GitHub**:
-   - Go to [github.com/new](https://github.com/new).
-   - Name your repository `android-oscam-bridge`.
-   - Set visibility to **Public** (or **Private**).
-   - Do **NOT** check "Initialize this repository with a README", ".gitignore", or "License" (the workspace already has complete production files).
-
-2. **Link local git repository and push**:
-   Open PowerShell or Terminal in your project directory (`c:\Users\lizarragapc\Documents\android-oscam-bridge`):
-   ```bash
-   # Add your GitHub repository as remote origin (replace YOUR_USERNAME with your GitHub username)
-   git remote add origin https://github.com/YOUR_USERNAME/android-oscam-bridge.git
-
-   # Ensure branch is named master (or main)
-   git branch -M master
-
-   # Push all commits and tags to GitHub
-   git push -u origin master
-   ```
-
-3. **Clone link for downstream deployment**:
-   Once pushed, your project will be accessible at:
-   ```text
-   https://github.com/YOUR_USERNAME/android-oscam-bridge
-   ```
-
----
 
 ## Repository Structure
 
