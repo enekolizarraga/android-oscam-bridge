@@ -65,12 +65,12 @@ The bridge features a hardware abstraction layer (`IChipsetAdapter`) with automa
 
 ---
 
-## 3. OSCam Server Prerequisites
+## 3. Server Configuration (OSCam DVBAPI & Newcamd v5.25)
 
-On your OSCam server (the Linux receiver or PC hosting your legitimate card), configure the network `dvbapi` module.
+The bridge natively supports two protocols: **OSCam DVBAPI** (clear TCP socket) and **Newcamd v5.25** (3DES-encrypted TCP socket). You can configure multiple servers and readers across both protocols simultaneously.
 
-### `oscam.conf`
-Ensure the `[dvbapi]` section is enabled with network listen mode:
+### Option A: OSCam DVBAPI Protocol (`oscam.conf`)
+Ensure the `[dvbapi]` section is enabled with network listen mode on your Linux/Raspberry Pi cardserver:
 
 ```ini
 [global]
@@ -89,16 +89,54 @@ user                          = android_tv
 boxtype                       = pc
 ```
 
-### `oscam.user`
-Create the matching user account:
+### Option B: Newcamd v5.25 Protocol (`oscam.conf`)
+Newcamd uses 3DES encryption over a 14-byte DES key. Configure individual TCP ports for each domestic card/CAID:
+
+```ini
+[newcamd]
+port                          = 10000@1810:000000,004106;10001@1830:000000,003411;10002@183E:000000
+key                           = 0102030405060708091011121314
+allowed                       = 192.168.0.0-192.168.255.255
+keepalive                     = 1
+mgclient                      = 0
+```
+
+### Matching User Account (`oscam.user`)
+Create the matching user account in `oscam.user`:
 
 ```ini
 [account]
 user                          = android_tv
-pwd                           = 
-group                         = 1
+pwd                           = android_tv
+group                         = 1,2,3
 au                            = 1
 ```
+
+---
+
+### Domestic Multi-Provider Matrix & Quick Templates
+
+The bridge includes built-in one-click configurations for 15 European and international domestic subscription cards:
+
+| Provider Name | Country | Satellite / Orbit | Primary CAID | Default Port | Protocol |
+|---|---|---|---|---|---|
+| **Movistar+ Satellite** | Spain | Astra 19.2°E / Hispasat 30°W | `0x1810` (Nagra) | `9000` / `10000` | DVBAPI / Newcamd |
+| **HD+ Germany** | Germany | Astra 19.2°E | `0x1830`, `0x1843` | `10001` | Newcamd |
+| **Sky Deutschland** | Germany / Austria | Astra 19.2°E | `0x098D`, `0x098C` | `10002` | Newcamd |
+| **Sky Italia** | Italy | Hotbird 13.0°E | `0x09CD` | `10003` | Newcamd |
+| **Sky UK** | UK / Ireland | Astra 28.2°E | `0x0963` | `10004` | Newcamd |
+| **Tivùsat** | Italy | Hotbird 13.0°E | `0x183E`, `0x1856` | `10005` | Newcamd |
+| **Canal+ France** | France | Astra 19.2°E | `0x0100`, `0x1811` | `10006` | Newcamd |
+| **Fransat** | France | Eutelsat 5.0°W | `0x0500` (Viaccess) | `10007` | Newcamd |
+| **MEO / NOS** | Portugal | Hispasat 30.0°W | `0x0100`, `0x1802` | `10008` | Newcamd |
+| **Polsat Box** | Poland | Hotbird 13.0°E | `0x1803`, `0x1861` | `10009` | Newcamd |
+| **SRG SSR** | Switzerland | Hotbird 13.0°E | `0x0500` (Viaccess) | `10010` | Newcamd |
+| **ORF Digital** | Austria | Astra 19.2°E | `0x0D95`, `0x0648` | `10011` | Newcamd |
+| **D-Smart** | Turkey | Türksat 42.0°E | `0x092B` | `10012` | Newcamd |
+| **Vodafone / Unitymedia** | Germany | DVB-C Cable | `0x098E`, `0x1838` | `10013` | Newcamd |
+| **Saorview / TDT** | Ireland / Spain | DVB-T/T2 Terrestrial | `0x1801`, `0x0500` | `10014` | Newcamd |
+
+In **Web Console Pro (`http://<TV_IP>:8080`)**, simply click any provider badge in the **"Fast Provider Templates"** toolbar to auto-fill the CAID, port, and default credentials, or add multiple servers across different providers for seamless multi-satellite failover.
 
 ---
 

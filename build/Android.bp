@@ -20,6 +20,7 @@ cc_library_static {
         "bridge/BridgeLogger.cpp",
         "bridge/DvbapiProtocol.cpp",
         "bridge/DvbapiClient.cpp",
+        "bridge/NewcamdClient.cpp",
         "bridge/SatellitePmtParser.cpp",
         "bridge/SoftwareDescrambler.cpp",
     ],

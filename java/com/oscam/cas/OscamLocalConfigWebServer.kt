@@ -20,22 +20,24 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.URLDecoder
+import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedDeque
 
 /**
- * Enterprise-grade local web management console for Android TV OSCam CAS Bridge.
+ * Enterprise-grade local web management console for Android TV CAS Bridge.
  *
  * Major features:
+ *  - Dual-protocol client support: OSCam dvbapi and Newcamd v5.25.
+ *  - Multi-server & multi-provider matrix with priority failover.
+ *  - Fast provider templates (Movistar+, HD+, Sky DE/IT/UK, Tivusat, Canal+, Fransat, MEO, Polsat, SRG, ORF, D-Smart).
  *  - Real-time telemetry dashboard with dual live SVG latency & ECM throughput graphs.
- *  - Multi-server OSCam profile management (Primary & Fallback readers) with parallel ping tests.
  *  - Comprehensive Satellite / DVB Channel & Transponder Manager with M3U and Enigma2 lamedb export.
  *  - Embedded HTML5 Stream Proxy Diagnostic Player for live descrambler testing.
  *  - Interactive ECM packet inspector and Control Word (CW) hex diagnostic lab.
  *  - Hardware SoC identification panel (Amlogic, MediaTek, Realtek, Broadcom, Synaptics, Novatek).
- *  - Wake-on-LAN (WoL) multi-device manager to wake up sleeping OSCam receivers or Docker servers.
+ *  - Wake-on-LAN (WoL) multi-device manager to wake up sleeping OSCam/Newcamd receivers or Docker servers.
  *  - Interactive CAID satellite & terrestrial preset applicator.
  *  - In-memory CW Cache monitor & cache flush tool.
  *  - Live log terminal with color-coded levels, real-time filtering, auto-scroll toggle, and download.
@@ -87,6 +89,7 @@ class OscamLocalConfigWebServer(
                 createContext("/api/save", ApiSaveHandler())
                 createContext("/api/backup", ApiBackupHandler())
                 createContext("/api/restore", ApiRestoreHandler())
+                createContext("/api/presets", ApiPresetsHandler())
 
                 // Diagnostics & Tests
                 createContext("/api/test", ApiTestHandler())
@@ -208,6 +211,31 @@ class OscamLocalConfigWebServer(
         }
     }
 
+    private inner class ApiPresetsHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val array = JSONArray()
+                    ProviderPreset.getAllPresets().forEach { p ->
+                        array.put(JSONObject().apply {
+                            put("id", p.id)
+                            put("name", p.name)
+                            put("country", p.country)
+                            put("satellite", p.satellite)
+                            put("default_port", p.defaultPort)
+                            put("description", p.description)
+                            put("caids", p.caids.joinToString(", ") { "0x%04X".format(it) })
+                        })
+                    }
+                    val json = JSONObject().apply { put("presets", array) }
+                    sendJsonResponse(exchange, 200, json.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, "Presets error: ${e.message}")
+                }
+            }
+        }
+    }
+
     private inner class ApiGetConfigHandler : HttpHandler {
         override fun handle(exchange: HttpExchange) {
             scope.launch {
@@ -226,9 +254,13 @@ class OscamLocalConfigWebServer(
                             serversArray.put(JSONObject().apply {
                                 put("id", s.id)
                                 put("name", s.name)
+                                put("protocol", s.protocol.name)
                                 put("host", s.host)
                                 put("port", s.port)
                                 put("user", s.user)
+                                put("password", s.password)
+                                put("des_key", s.desKey)
+                                put("caid", "0x%04X".format(s.caid))
                                 put("enabled", s.enabled)
                                 put("is_primary", s.isPrimary)
                             })
@@ -293,19 +325,24 @@ class OscamLocalConfigWebServer(
                     val reconnectInterval = json.optInt("reconnect_interval_ms", 2000)
                     val autoStart = json.optBoolean("autostart", true)
 
-                    // Parse Servers
+                    // Parse Servers (Supports both DVBAPI and NEWCAMD)
                     val serversList = mutableListOf<OscamServerEntry>()
                     val serversJsonArray = json.optJSONArray("servers")
                     if (serversJsonArray != null && serversJsonArray.length() > 0) {
                         for (i in 0 until serversJsonArray.length()) {
                             val sObj = serversJsonArray.getJSONObject(i)
+                            val protoStr = sObj.optString("protocol", "DVBAPI")
                             serversList.add(
                                 OscamServerEntry(
                                     id = sObj.optString("id", UUID.randomUUID().toString()),
                                     name = sObj.optString("name", "Server ${i + 1}"),
+                                    protocol = ServerProtocol.fromString(protoStr),
                                     host = sObj.optString("host", "192.168.1.100").trim(),
-                                    port = sObj.optInt("port", 9000),
+                                    port = sObj.optInt("port", if (protoStr == "NEWCAMD") 10000 else 9000),
                                     user = sObj.optString("user", "android_tv").trim(),
+                                    password = sObj.optString("password", "android_tv").trim(),
+                                    desKey = sObj.optString("des_key", "0102030405060708091011121314").trim(),
+                                    caid = parseHexOrDec(sObj.optString("caid", "0x1810")),
                                     enabled = sObj.optBoolean("enabled", true),
                                     isPrimary = sObj.optBoolean("is_primary", i == 0)
                                 )
@@ -376,8 +413,8 @@ class OscamLocalConfigWebServer(
                     repository.saveConfig(newConfig)
                     onConfigUpdatedCallback(newConfig)
 
-                    appendLog("Configuration updated from Web Console (${serversList.size} servers, ${channelsList.size} channels, ${delivery.name})")
-                    sendJsonResponse(exchange, 200, "{\"success\":true,\"message\":\"Configuration saved and applied in real-time\"}")
+                    appendLog("Configuration saved (${serversList.size} servers [DVBAPI/Newcamd], ${channelsList.size} channels, ${delivery.name})")
+                    sendJsonResponse(exchange, 200, "{\"success\":true,\"message\":\"Configuration saved and hot-reloaded successfully\"}")
                 } catch (e: Exception) {
                     appendLog("ERROR saving configuration: ${e.message}")
                     sendErrorResponse(exchange, 500, "Save failed: ${e.message}")
@@ -394,22 +431,35 @@ class OscamLocalConfigWebServer(
                     val json = JSONObject(body)
                     val host = json.optString("host", "127.0.0.1").trim()
                     val port = json.optInt("port", 9000)
+                    val proto = json.optString("protocol", "DVBAPI")
 
-                    appendLog("Testing connectivity to OSCam at $host:$port...")
+                    appendLog("Testing connectivity to $proto server at $host:$port...")
                     val startTime = System.currentTimeMillis()
-                    val ok = OscamNativeBridge.nativeTestConnection(host, port, 3000)
+                    
+                    var ok = false
+                    var err = ""
+                    try {
+                        Socket().use { s ->
+                            s.connect(InetSocketAddress(host, port), 3000)
+                            ok = true
+                        }
+                    } catch (e: Exception) {
+                        ok = false
+                        err = e.message ?: "Connection refused"
+                    }
+
                     val elapsed = System.currentTimeMillis() - startTime
-                    val err = OscamNativeBridge.nativeGetLastError()
 
                     if (ok) {
-                        appendLog("Ping test OK for $host:$port (${elapsed}ms)")
+                        appendLog("Ping test OK for $proto $host:$port (${elapsed}ms)")
                     } else {
-                        appendLog("Ping test FAILED for $host:$port: $err")
+                        appendLog("Ping test FAILED for $proto $host:$port: $err")
                     }
 
                     val resObj = JSONObject().apply {
                         put("success", ok)
                         put("latency_ms", elapsed)
+                        put("protocol", proto)
                         put("error", if (ok) "" else err)
                     }
 
@@ -429,12 +479,22 @@ class OscamLocalConfigWebServer(
                     val results = config.servers.map { s ->
                         async {
                             val start = System.currentTimeMillis()
-                            val ok = OscamNativeBridge.nativeTestConnection(s.host, s.port, 2500)
+                            var ok = false
+                            var err = ""
+                            try {
+                                Socket().use { sock ->
+                                    sock.connect(InetSocketAddress(s.host, s.port), 2500)
+                                    ok = true
+                                }
+                            } catch (e: Exception) {
+                                ok = false
+                                err = e.message ?: "Connection refused"
+                            }
                             val elapsed = System.currentTimeMillis() - start
-                            val err = if (ok) "" else OscamNativeBridge.nativeGetLastError()
                             JSONObject().apply {
                                 put("id", s.id)
                                 put("name", s.name)
+                                put("protocol", s.protocol.name)
                                 put("host", s.host)
                                 put("port", s.port)
                                 put("success", ok)
@@ -463,7 +523,6 @@ class OscamLocalConfigWebServer(
         override fun handle(exchange: HttpExchange) {
             scope.launch {
                 try {
-                    // Flush software and hardware cache
                     appendLog("In-memory Control Word (CW) Cache cleared via Web Console")
                     val res = JSONObject().apply {
                         put("success", true)
@@ -536,7 +595,7 @@ class OscamLocalConfigWebServer(
             scope.launch {
                 val sb = StringBuilder()
                 sb.append("=======================================================\n")
-                sb.append(" Android TV OSCam CAS Bridge Diagnostic Log Dump\n")
+                sb.append(" Android TV OSCam/Newcamd CAS Bridge Diagnostic Log\n")
                 sb.append(" Generated: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}\n")
                 sb.append("=======================================================\n\n")
                 logBuffer.forEach { sb.append(it).append("\n") }
@@ -586,7 +645,7 @@ class OscamLocalConfigWebServer(
                 try {
                     val config = repository.getCurrentConfig()
                     val json = JSONObject().apply {
-                        put("backup_version", "2.0")
+                        put("backup_version", "3.0")
                         put("export_date", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
                         put("delivery_system", config.deliverySystem.name)
                         put("caids", config.getCaidsCsv())
@@ -599,9 +658,13 @@ class OscamLocalConfigWebServer(
                         config.servers.forEach { s ->
                             sArr.put(JSONObject().apply {
                                 put("name", s.name)
+                                put("protocol", s.protocol.name)
                                 put("host", s.host)
                                 put("port", s.port)
                                 put("user", s.user)
+                                put("password", s.password)
+                                put("des_key", s.desKey)
+                                put("caid", "0x%04X".format(s.caid))
                                 put("enabled", s.enabled)
                                 put("is_primary", s.isPrimary)
                             })
@@ -637,7 +700,7 @@ class OscamLocalConfigWebServer(
 
                     val bytes = json.toString(4).toByteArray(Charsets.UTF_8)
                     exchange.responseHeaders.set("Content-Type", "application/json")
-                    exchange.responseHeaders.set("Content-Disposition", "attachment; filename=oscam_bridge_backup.json")
+                    exchange.responseHeaders.set("Content-Disposition", "attachment; filename=cas_bridge_backup.json")
                     exchange.sendResponseHeaders(200, bytes.size.toLong())
                     exchange.responseBody.write(bytes)
                     exchange.responseBody.close()
@@ -673,12 +736,17 @@ class OscamLocalConfigWebServer(
                     if (sArr != null) {
                         for (i in 0 until sArr.length()) {
                             val sObj = sArr.getJSONObject(i)
+                            val protoStr = sObj.optString("protocol", "DVBAPI")
                             serversList.add(
                                 OscamServerEntry(
                                     name = sObj.optString("name", "Server ${i + 1}"),
+                                    protocol = ServerProtocol.fromString(protoStr),
                                     host = sObj.optString("host", "192.168.1.100").trim(),
                                     port = sObj.optInt("port", 9000),
                                     user = sObj.optString("user", "android_tv").trim(),
+                                    password = sObj.optString("password", "android_tv").trim(),
+                                    desKey = sObj.optString("des_key", "0102030405060708091011121314").trim(),
+                                    caid = parseHexOrDec(sObj.optString("caid", "0x1810")),
                                     enabled = sObj.optBoolean("enabled", true),
                                     isPrimary = sObj.optBoolean("is_primary", i == 0)
                                 )
@@ -739,7 +807,7 @@ class OscamLocalConfigWebServer(
                     val host = exchange.requestHeaders.getFirst("Host")?.split(":")?.get(0) ?: "127.0.0.1"
                     val config = repository.getCurrentConfig()
                     val m3u = StringBuilder()
-                    m3u.append("#EXTM3U name=\"Android OSCam CAS Bridge Satellite Playlist\"\n\n")
+                    m3u.append("#EXTM3U name=\"Android TV Satellite Channel Stream Playlist\"\n\n")
 
                     if (config.channels.isNotEmpty()) {
                         config.channels.forEach { ch ->
@@ -758,7 +826,7 @@ class OscamLocalConfigWebServer(
 
                     val bytes = m3u.toString().toByteArray(Charsets.UTF_8)
                     exchange.responseHeaders.set("Content-Type", "audio/x-mpegurl; charset=UTF-8")
-                    exchange.responseHeaders.set("Content-Disposition", "attachment; filename=oscam_channels.m3u")
+                    exchange.responseHeaders.set("Content-Disposition", "attachment; filename=channels.m3u")
                     exchange.sendResponseHeaders(200, bytes.size.toLong())
                     exchange.responseBody.write(bytes)
                     exchange.responseBody.close()
@@ -875,7 +943,7 @@ class OscamLocalConfigWebServer(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Android TV OSCam CAS Bridge Master Console</title>
+    <title>Android TV CAS Bridge Master Console (OSCam &amp; Newcamd)</title>
     <style>
         :root {
             --bg-main: #080B11;
@@ -891,9 +959,9 @@ class OscamLocalConfigWebServer(
             --warning: #F59E0B;
             --danger: #EF4444;
             --accent: #8B5CF6;
+            --accent-glow: rgba(139, 92, 246, 0.35);
             --text-main: #F3F4F6;
             --text-muted: #94A3B8;
-            --badge-bg: rgba(255, 255, 255, 0.05);
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -905,7 +973,7 @@ class OscamLocalConfigWebServer(
             justify-content: center;
             min-height: 100vh;
         }
-        .wrapper { max-width: 1040px; width: 100%; }
+        .wrapper { max-width: 1060px; width: 100%; }
 
         /* Header */
         header {
@@ -1062,7 +1130,7 @@ class OscamLocalConfigWebServer(
         .server-card:hover { border-color: var(--border-hover); }
         .server-fields {
             display: grid;
-            grid-template-columns: 2fr 2.5fr 1fr 1.5fr auto;
+            grid-template-columns: 2fr 1.5fr 2fr 1.2fr 1.5fr;
             gap: 12px;
             align-items: center;
         }
@@ -1130,6 +1198,7 @@ class OscamLocalConfigWebServer(
             user-select: none;
         }
         .preset-badge:hover { color: #FFF; border-color: var(--primary); background: rgba(59, 130, 246, 0.1); }
+        .preset-badge.badge-purple:hover { border-color: var(--accent); background: rgba(139, 92, 246, 0.1); }
 
         /* Terminal Logs */
         .terminal {
@@ -1184,12 +1253,12 @@ class OscamLocalConfigWebServer(
             <div class="brand">
                 <div class="brand-icon">Ω</div>
                 <div class="brand-title">
-                    <h1>Android TV OSCam CAS Bridge Master</h1>
-                    <p>Universal Tuner HAL (DVB-S2/T2/C), Descrambler Proxy &amp; Multi-Server Manager</p>
+                    <h1>Android TV CAS Bridge Master Console</h1>
+                    <p>OSCam (dvbapi) &amp; Newcamd Multi-Server Universal Tuner HAL</p>
                 </div>
             </div>
             <div class="header-actions">
-                <button type="button" class="btn btn-outline" onclick="testAllServers()" title="Ping all configured OSCam servers">⚡ Ping All</button>
+                <button type="button" class="btn btn-outline" onclick="testAllServers()" title="Ping all configured servers">⚡ Ping All</button>
                 <div class="status-badge" id="pill-badge">
                     <span class="status-dot" id="pill-dot"></span>
                     <span id="pill-text">${status.name}</span>
@@ -1210,7 +1279,7 @@ class OscamLocalConfigWebServer(
             <div class="metric-tile">
                 <div class="metric-tag">Processed ECM Packets</div>
                 <div class="metric-value" id="val-ecms">${stats.ecmSentCount}</div>
-                <div class="metric-sub">DVBAPI Protocol Flow</div>
+                <div class="metric-sub">Dual DVBAPI / Newcamd Flow</div>
             </div>
             <div class="metric-tile">
                 <div class="metric-tag">Average CW Latency</div>
@@ -1227,7 +1296,7 @@ class OscamLocalConfigWebServer(
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
             <button class="tab-btn active" onclick="showTab('tab-dashboard', this)">📊 Dashboard &amp; Telemetry</button>
-            <button class="tab-btn" onclick="showTab('tab-servers', this)">📡 OSCam Servers &amp; Failover</button>
+            <button class="tab-btn" onclick="showTab('tab-servers', this)">📡 Servers &amp; Providers (OSCam / Newcamd)</button>
             <button class="tab-btn" onclick="showTab('tab-channels', this)">🛰️ Channels &amp; Transponders</button>
             <button class="tab-btn" onclick="showTab('tab-tuner', this)">⚙️ Tuner &amp; CAID Presets</button>
             <button class="tab-btn" onclick="showTab('tab-player', this)">📺 Stream Proxy &amp; Player</button>
@@ -1243,7 +1312,7 @@ class OscamLocalConfigWebServer(
                 <div class="panel-header">
                     <div>
                         <div class="panel-title">Real-Time DVB Telemetry &amp; Latency Analytics</div>
-                        <div class="panel-desc">Dynamic monitoring of OSCam DVBAPI socket round-trip time and ECM throughput.</div>
+                        <div class="panel-desc">Dynamic monitoring of OSCam &amp; Newcamd round-trip time and ECM throughput.</div>
                     </div>
                     <button type="button" class="btn btn-outline" onclick="flushCwCache()">Flush CW Cache</button>
                 </div>
@@ -1280,15 +1349,37 @@ class OscamLocalConfigWebServer(
             </div>
         </div>
 
-        <!-- TAB 2: OSCam Servers & Failover -->
+        <!-- TAB 2: Servers & Providers (OSCam / Newcamd) -->
         <div class="tab-pane" id="tab-servers">
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">OSCam Server Profiles &amp; Failover Matrix</div>
-                        <div class="panel-desc">Configure primary domestic card receiver and fallback readers. No reboot or recompile needed.</div>
+                        <div class="panel-title">Server Profiles &amp; Provider Matrix (OSCam &amp; Newcamd)</div>
+                        <div class="panel-desc">Configure your domestic OSCam receivers or Newcamd servers with failover. No third-party boxes needed.</div>
                     </div>
-                    <button type="button" class="btn btn-primary" onclick="addServerCard()">+ Add Server Profile</button>
+                    <button type="button" class="btn btn-primary" onclick="addServerCard()">+ Add Custom Server</button>
+                </div>
+
+                <!-- Provider Quick Templates Toolbar -->
+                <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:18px;">
+                    <div style="font-weight:700; font-size:13px; margin-bottom:8px; color:var(--text-main);">⚡ Fast Provider Templates (Click to add configured server profile):</div>
+                    <div class="preset-container" style="margin:0;">
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('Movistar+ ES', '0x1810', 10001, 'NEWCAMD')">+ 🇪🇸 Movistar+ (0x1810)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('HD+ Germany', '0x1830', 10002, 'NEWCAMD')">+ 🇩🇪 HD+ Astra (0x1830)</span>
+                        <span class="preset-badge" onclick="addServerFromPreset('Sky DE', '0x098C', 9000, 'DVBAPI')">+ 🇩🇪 Sky DE (0x098C)</span>
+                        <span class="preset-badge" onclick="addServerFromPreset('Sky Italia', '0x09CD', 9000, 'DVBAPI')">+ 🇮🇹 Sky IT (0x09CD)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('Tivùsat IT', '0x183E', 10005, 'NEWCAMD')">+ 🇮🇹 Tivùsat (0x183E)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('Canal+ France', '0x0100', 10006, 'NEWCAMD')">+ 🇫🇷 Canal+ FR (0x0100)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('Fransat FR', '0x0500', 10007, 'NEWCAMD')">+ 🇫🇷 Fransat (0x0500)</span>
+                        <span class="preset-badge" onclick="addServerFromPreset('Sky UK', '0x0963', 9000, 'DVBAPI')">+ 🇬🇧 Sky UK (0x0963)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('MEO Portugal', '0x0100', 10009, 'NEWCAMD')">+ 🇵🇹 MEO / NOS (0x0100)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('Polsat Polska', '0x1803', 10010, 'NEWCAMD')">+ 🇵🇱 Polsat (0x1803)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('SRG SSR Swiss', '0x0500', 10011, 'NEWCAMD')">+ 🇨🇭 SRG SSR (0x0500)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('ORF Austria', '0x0D95', 10012, 'NEWCAMD')">+ 🇦🇹 ORF Digital (0x0D95)</span>
+                        <span class="preset-badge badge-purple" onclick="addServerFromPreset('D-Smart Turkey', '0x092B', 10013, 'NEWCAMD')">+ 🇹🇷 D-Smart (0x092B)</span>
+                        <span class="preset-badge" onclick="addServerFromPreset('Vodafone Cable', '0x09C7', 9000, 'DVBAPI')">+ 🇩🇪 Vodafone Cable (0x09C7)</span>
+                        <span class="preset-badge" onclick="addServerFromPreset('TDT Spain', '0x1801', 9000, 'DVBAPI')">+ 🇪🇸 TDT / Saorview (0x1801)</span>
+                    </div>
                 </div>
 
                 <div id="server-list-box"></div>
@@ -1316,12 +1407,12 @@ class OscamLocalConfigWebServer(
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">Satellite &amp; DVB Channel Manager</div>
+                        <div class="panel-title">Satellite &amp; DVB Channel Database</div>
                         <div class="panel-desc">Manage satellite transponders, service IDs, and stream mappings for external and native players.</div>
                     </div>
                     <div style="display:flex; gap:8px;">
                         <button type="button" class="btn btn-outline" onclick="addChannelRow()">+ Add Channel</button>
-                        <a href="/playlist.m3u" class="btn btn-purple" download="oscam_channels.m3u">⬇ Export M3U</a>
+                        <a href="/playlist.m3u" class="btn btn-purple" download="channels.m3u">⬇ Export M3U</a>
                         <a href="/lamedb" class="btn btn-outline" download="lamedb">⬇ Export Enigma2 lamedb</a>
                     </div>
                 </div>
@@ -1353,7 +1444,7 @@ class OscamLocalConfigWebServer(
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">Tuner Standard &amp; CAID Subscription Management</div>
+                        <div class="panel-title">Tuner Standard &amp; Provider CAID Presets</div>
                         <div class="panel-desc">Select active tuner delivery system and fast-inject managed Conditional Access IDs.</div>
                     </div>
                 </div>
@@ -1369,17 +1460,22 @@ class OscamLocalConfigWebServer(
                 </div>
 
                 <div style="margin-bottom:14px;">
-                    <label>Satellite Subscription Presets (Click to append CAID):</label>
+                    <label>European &amp; International Satellite Providers (Click to append CAID):</label>
                     <div class="preset-container">
-                        <span class="preset-badge" onclick="insertCaid('0x1810')">+ Movistar+ DVB-S2 (0x1810)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x1810')">+ Movistar+ (0x1810)</span>
                         <span class="preset-badge" onclick="insertCaid('0x1830')">+ HD+ Astra (0x1830)</span>
                         <span class="preset-badge" onclick="insertCaid('0x1843')">+ HD+ Astra (0x1843)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x098C')">+ Sky DE (0x098C)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x09CD')">+ Sky IT (0x09CD)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x183E')">+ Tivùsat (0x183E)</span>
                         <span class="preset-badge" onclick="insertCaid('0x0100')">+ Canal+ / Seca (0x0100)</span>
-                        <span class="preset-badge" onclick="insertCaid('0x0500')">+ Viaccess / Fransat (0x0500)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x0500')">+ Fransat / SRG (0x0500)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x0963')">+ Sky UK (0x0963)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x1803')">+ Polsat (0x1803)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x0D95')">+ ORF Digital (0x0D95)</span>
+                        <span class="preset-badge" onclick="insertCaid('0x092B')">+ D-Smart (0x092B)</span>
                         <span class="preset-badge" onclick="insertCaid('0x0B00')">+ Conax (0x0B00)</span>
                         <span class="preset-badge" onclick="insertCaid('0x0604')">+ Irdeto (0x0604)</span>
-                        <span class="preset-badge" onclick="insertCaid('0x09CD')">+ Sky VideoGuard (0x09CD)</span>
-                        <span class="preset-badge" onclick="insertCaid('0x098C')">+ Sky VideoGuard (0x098C)</span>
                         <span class="preset-badge" onclick="insertCaid('0x1801')">+ Nagra Terrestrial (0x1801)</span>
                     </div>
                 </div>
@@ -1387,7 +1483,7 @@ class OscamLocalConfigWebServer(
                 <div style="margin-bottom:18px;">
                     <label for="caids-text-input">Managed CA_system_ids (Hex CSV):</label>
                     <input type="text" id="caids-text-input" value="${config.getCaidsCsv()}">
-                    <div class="hint">The Android Tuner HAL will exclusively query the OSCam Bridge for PMTs containing these CAIDs.</div>
+                    <div class="hint">The Android Tuner HAL will exclusively query the CAS Bridge for PMTs containing these CAIDs.</div>
                 </div>
 
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:18px;">
@@ -1422,7 +1518,7 @@ class OscamLocalConfigWebServer(
                         <div class="panel-title">HTTP Stream Descrambler Proxy (Port 9191)</div>
                         <div class="panel-desc">Play encrypted recordings (.ts), SAT>IP feeds, or network IPTV streams outside the native tuner.</div>
                     </div>
-                    <a href="/playlist.m3u" class="btn btn-purple" download="oscam_channels.m3u">⬇ Download M3U Playlist</a>
+                    <a href="/playlist.m3u" class="btn btn-purple" download="channels.m3u">⬇ Download M3U Playlist</a>
                 </div>
 
                 <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px;">
@@ -1521,13 +1617,13 @@ class OscamLocalConfigWebServer(
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">Real-Time DVBAPI &amp; CAS Log Stream</div>
+                        <div class="panel-title">Real-Time DVBAPI, Newcamd &amp; CAS Log Stream</div>
                         <div class="panel-desc">Streaming live events from <code>OscamCasBridge</code> and <code>vendor.oscam.cas-service</code>.</div>
                     </div>
                     <div style="display:flex; gap:8px;">
                         <button type="button" class="btn btn-outline" id="btn-autoscroll" onclick="toggleAutoScroll()">Pause Scroll</button>
                         <button type="button" class="btn btn-outline" onclick="clearLogs()">Clear</button>
-                        <a href="/api/download_logs" class="btn btn-outline" download="oscam_bridge_logs.log">⬇ Download .log</a>
+                        <a href="/api/download_logs" class="btn btn-outline" download="cas_bridge_logs.log">⬇ Download .log</a>
                     </div>
                 </div>
 
@@ -1546,7 +1642,7 @@ class OscamLocalConfigWebServer(
                 </div>
 
                 <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:24px;">
-                    <a href="/api/backup" class="btn btn-primary" download="oscam_bridge_backup.json">⬇ Export Configuration (.json)</a>
+                    <a href="/api/backup" class="btn btn-primary" download="cas_bridge_backup.json">⬇ Export Configuration (.json)</a>
                     
                     <label class="btn btn-outline" style="cursor:pointer;">
                         <span>⬆ Restore Backup (.json)</span>
@@ -1568,7 +1664,7 @@ class OscamLocalConfigWebServer(
         var latencyHistory = [65, 58, 55, 62, 58, 50, 52, 48, 50, 52];
         var ecmHistory = [12, 15, 14, 18, 16, 15, 19, 21, 18, 20];
         var autoScrollEnabled = true;
-        var currentConfig = null;
+        var currentServers = [];
 
         function showTab(id, btn) {
             document.querySelectorAll('.tab-pane').forEach(function(el) { el.classList.remove('active'); });
@@ -1581,13 +1677,13 @@ class OscamLocalConfigWebServer(
             fetch('/api/config')
                 .then(function(r) { return r.json(); })
                 .then(function(cfg) {
-                    currentConfig = cfg;
                     document.getElementById('delivery-dropdown').value = cfg.delivery_system || 'DVBS';
                     document.getElementById('caids-text-input').value = cfg.caids || '';
                     document.getElementById('cw-cache-toggle').checked = (cfg.cw_cache_enabled !== false);
                     document.getElementById('timeout-input').value = cfg.timeout_ms || 4000;
                     document.getElementById('reconnect-input').value = cfg.reconnect_interval_ms || 2000;
-                    renderServerCards(cfg.servers || []);
+                    currentServers = cfg.servers || [];
+                    renderServerCards(currentServers);
                     renderChannelsTable(cfg.channels || []);
                 })
                 .catch(function(e) { showAlert('Failed to load configuration: ' + e, 'error'); });
@@ -1600,67 +1696,104 @@ class OscamLocalConfigWebServer(
                 var card = document.createElement('div');
                 card.className = 'server-card';
                 card.id = 'srv-box-' + idx;
+                var isNewcamd = (s.protocol === 'NEWCAMD');
                 card.innerHTML = 
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">' +
+                        '<div style="font-weight:700; font-size:14px; color:#FFF;">' + (s.name || 'Server Profile ' + (idx + 1)) + '</div>' +
+                        '<span style="background:' + (isNewcamd ? 'rgba(139,92,246,0.2); color:#C4B5FD; border:1px solid #8B5CF6' : 'rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6') + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;">' + (s.protocol || 'DVBAPI') + '</span>' +
+                    '</div>' +
                     '<div class="server-fields">' +
                         '<div><label>Profile Name</label><input type="text" class="srv-name" value="' + (s.name || 'Server ' + (idx + 1)) + '"></div>' +
+                        '<div><label>Protocol</label><select class="srv-proto" onchange="toggleServerFields(' + idx + ')"><option value="DVBAPI"' + (!isNewcamd ? ' selected' : '') + '>OSCam (dvbapi)</option><option value="NEWCAMD"' + (isNewcamd ? ' selected' : '') + '>Newcamd v5.25</option></select></div>' +
                         '<div><label>Host / IP Address</label><input type="text" class="srv-host" value="' + (s.host || '192.168.1.100') + '"></div>' +
-                        '<div><label>Port</label><input type="number" class="srv-port" value="' + (s.port || 9000) + '"></div>' +
-                        '<div><label>User</label><input type="text" class="srv-user" value="' + (s.user || 'android_tv') + '"></div>' +
-                        '<div style="display:flex; gap:6px; margin-top:16px;">' +
-                            '<button type="button" class="btn btn-outline" onclick="pingServer(' + idx + ')">Ping</button>' +
-                            (servers.length > 1 ? '<button type="button" class="btn btn-danger" onclick="removeServerCard(' + idx + ')">×</button>' : '') +
-                        '</div>' +
+                        '<div><label>Port</label><input type="number" class="srv-port" value="' + (s.port || (isNewcamd ? 10000 : 9000)) + '"></div>' +
+                        '<div><label>Username</label><input type="text" class="srv-user" value="' + (s.user || 'android_tv') + '"></div>' +
                     '</div>' +
-                    '<div class="hint" id="ping-status-' + idx + '" style="margin-top:6px;"></div>';
+                    '<div class="newcamd-extra-' + idx + '" style="margin-top:12px; display:' + (isNewcamd ? 'grid' : 'none') + '; grid-template-columns: 1.5fr 2.5fr 1fr; gap:12px;">' +
+                        '<div><label>Password</label><input type="text" class="srv-pass" value="' + (s.password || 'android_tv') + '"></div>' +
+                        '<div><label>DES Key (14 bytes hex)</label><input type="text" class="srv-des" value="' + (s.des_key || '0102030405060708091011121314') + '"></div>' +
+                        '<div><label>Target CAID</label><input type="text" class="srv-caid" value="' + (s.caid || '0x1810') + '"></div>' +
+                    '</div>' +
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:10px;">' +
+                        '<div class="hint" id="ping-status-' + idx + '" style="margin:0;">Ready</div>' +
+                        '<div style="display:flex; gap:8px;">' +
+                            '<button type="button" class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="pingServer(' + idx + ')">Ping Test</button>' +
+                            (servers.length > 1 ? '<button type="button" class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="removeServerCard(' + idx + ')">Remove</button>' : '') +
+                        '</div>' +
+                    '</div>';
                 container.appendChild(card);
             });
         }
 
+        function toggleServerFields(idx) {
+            var card = document.getElementById('srv-box-' + idx);
+            var proto = card.querySelector('.srv-proto').value;
+            var extra = card.querySelector('.newcamd-extra-' + idx);
+            if (extra) {
+                extra.style.display = (proto === 'NEWCAMD') ? 'grid' : 'none';
+            }
+        }
+
         function addServerCard() {
-            var container = document.getElementById('server-list-box');
-            var idx = container.children.length;
-            var card = document.createElement('div');
-            card.className = 'server-card';
-            card.id = 'srv-box-' + idx;
-            card.innerHTML = 
-                '<div class="server-fields">' +
-                    '<div><label>Profile Name</label><input type="text" class="srv-name" value="Backup Receiver"></div>' +
-                    '<div><label>Host / IP Address</label><input type="text" class="srv-host" placeholder="192.168.1.150"></div>' +
-                    '<div><label>Port</label><input type="number" class="srv-port" value="9000"></div>' +
-                    '<div><label>User</label><input type="text" class="srv-user" value="android_tv"></div>' +
-                    '<div style="display:flex; gap:6px; margin-top:16px;">' +
-                        '<button type="button" class="btn btn-outline" onclick="pingServer(' + idx + ')">Ping</button>' +
-                        '<button type="button" class="btn btn-danger" onclick="removeServerCard(' + idx + ')">×</button>' +
-                    '</div>' +
-                '</div>' +
-                '<div class="hint" id="ping-status-' + idx + '" style="margin-top:6px;"></div>';
-            container.appendChild(card);
+            var s = {
+                name: 'Server ' + (currentServers.length + 1),
+                protocol: 'DVBAPI',
+                host: '192.168.1.150',
+                port: 9000,
+                user: 'android_tv',
+                password: 'android_tv',
+                des_key: '0102030405060708091011121314',
+                caid: '0x1810',
+                enabled: true,
+                is_primary: false
+            };
+            currentServers.push(s);
+            renderServerCards(currentServers);
+        }
+
+        function addServerFromPreset(name, caid, port, proto) {
+            var s = {
+                name: name,
+                protocol: proto || 'DVBAPI',
+                host: '192.168.1.150',
+                port: port || 9000,
+                user: 'android_tv',
+                password: 'android_tv',
+                des_key: '0102030405060708091011121314',
+                caid: caid,
+                enabled: true,
+                is_primary: (currentServers.length === 0)
+            };
+            currentServers.push(s);
+            renderServerCards(currentServers);
+            showAlert('✓ Added server profile for ' + name + ' (' + proto + ' Port ' + port + ', CAID ' + caid + ')', 'success');
         }
 
         function removeServerCard(idx) {
-            var el = document.getElementById('srv-box-' + idx);
-            if (el) el.remove();
+            currentServers.splice(idx, 1);
+            renderServerCards(currentServers);
         }
 
         function pingServer(idx) {
             var card = document.getElementById('srv-box-' + idx);
             var host = card.querySelector('.srv-host').value;
             var port = parseInt(card.querySelector('.srv-port').value, 10) || 9000;
+            var proto = card.querySelector('.srv-proto').value;
             var statusDiv = document.getElementById('ping-status-' + idx);
 
             statusDiv.style.color = 'var(--warning)';
-            statusDiv.innerText = 'Pinging ' + host + ':' + port + '...';
+            statusDiv.innerText = 'Pinging ' + proto + ' ' + host + ':' + port + '...';
 
             fetch('/api/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ host: host, port: port })
+                body: JSON.stringify({ host: host, port: port, protocol: proto })
             })
             .then(function(r) { return r.json(); })
             .then(function(res) {
                 if (res.success) {
                     statusDiv.style.color = 'var(--success)';
-                    statusDiv.innerText = '✓ Reachable (Latency: ' + res.latency_ms + ' ms)';
+                    statusDiv.innerText = '✓ Reachable (' + proto + ' Latency: ' + res.latency_ms + ' ms)';
                     updateLatencySparkline(res.latency_ms);
                 } else {
                     statusDiv.style.color = 'var(--danger)';
@@ -1674,13 +1807,13 @@ class OscamLocalConfigWebServer(
         }
 
         function testAllServers() {
-            showAlert('Testing connectivity to all OSCam servers in parallel...', 'success');
+            showAlert('Testing connectivity to all servers in parallel...', 'success');
             fetch('/api/test_all')
                 .then(function(r) { return r.json(); })
                 .then(function(res) {
                     if (res.results) {
                         var msg = 'Ping results: ' + res.results.map(function(r) {
-                            return r.name + ': ' + (r.success ? r.latency_ms + 'ms' : 'FAIL');
+                            return r.name + ' (' + r.protocol + '): ' + (r.success ? r.latency_ms + 'ms' : 'FAIL');
                         }).join(' | ');
                         showAlert(msg, 'success');
                     }
@@ -1798,11 +1931,20 @@ class OscamLocalConfigWebServer(
         function saveConfiguration() {
             var servers = [];
             document.querySelectorAll('.server-card').forEach(function(card, idx) {
+                var protoEl = card.querySelector('.srv-proto');
+                var passEl = card.querySelector('.srv-pass');
+                var desEl = card.querySelector('.srv-des');
+                var caidEl = card.querySelector('.srv-caid');
+
                 servers.push({
                     name: card.querySelector('.srv-name').value,
+                    protocol: protoEl ? protoEl.value : 'DVBAPI',
                     host: card.querySelector('.srv-host').value,
                     port: parseInt(card.querySelector('.srv-port').value, 10) || 9000,
                     user: card.querySelector('.srv-user').value,
+                    password: passEl ? passEl.value : 'android_tv',
+                    des_key: desEl ? desEl.value : '0102030405060708091011121314',
+                    caid: caidEl ? caidEl.value : '0x1810',
                     enabled: true,
                     is_primary: (idx === 0)
                 });
@@ -1884,13 +2026,13 @@ class OscamLocalConfigWebServer(
             var sys = document.getElementById('delivery-dropdown').value;
             var input = document.getElementById('caids-text-input');
             if (sys === 'DVBS') {
-                input.value = '0x1810, 0x1830, 0x1843, 0x0100, 0x0500, 0x0B00, 0x0604, 0x09CD';
+                input.value = '0x1810, 0x1830, 0x1843, 0x098C, 0x09CD, 0x183E, 0x0100, 0x0500, 0x0963, 0x1803, 0x0B00, 0x0604';
             } else if (sys === 'DVBT') {
                 input.value = '0x1801, 0x0604, 0x0B00, 0x0500';
             } else if (sys === 'DVBC') {
-                input.value = '0x1801, 0x0604, 0x0B00, 0x098C';
+                input.value = '0x1801, 0x0604, 0x0B00, 0x098C, 0x09C7, 0x1834';
             } else {
-                input.value = '0x1810, 0x1830, 0x1843, 0x1801, 0x0100, 0x0500, 0x0B00, 0x0604, 0x09CD';
+                input.value = '0x1810, 0x1830, 0x1843, 0x098C, 0x09CD, 0x183E, 0x1801, 0x0100, 0x0500, 0x0963, 0x1803, 0x0B00, 0x0604';
             }
         }
 
@@ -1980,7 +2122,7 @@ class OscamLocalConfigWebServer(
                         var formatted = data.logs.map(function(line) {
                             if (line.indexOf('CW') !== -1 || line.indexOf('Control Word') !== -1) {
                                 return '<span class="log-cw">' + line + '</span>';
-                            } else if (line.indexOf('ECM') !== -1 || line.indexOf('DVBAPI') !== -1) {
+                            } else if (line.indexOf('ECM') !== -1 || line.indexOf('DVBAPI') !== -1 || line.indexOf('Newcamd') !== -1) {
                                 return '<span class="log-ecm">' + line + '</span>';
                             } else if (line.indexOf('WARN') !== -1) {
                                 return '<span class="log-warn">' + line + '</span>';

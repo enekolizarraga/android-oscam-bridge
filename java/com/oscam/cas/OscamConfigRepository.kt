@@ -40,14 +40,67 @@ enum class TunerDeliverySystem {
 }
 
 /**
- * Model representing an OSCam server profile (enables multi-server & fallback setups).
+ * Supported client protocols for domestic card sharing.
+ */
+enum class ServerProtocol {
+    DVBAPI,   ///< OSCam native dvbapi protocol (TCP)
+    NEWCAMD;  ///< Newcamd v5.25 protocol with DES/3DES encryption (TCP)
+
+    companion object {
+        fun fromString(value: String): ServerProtocol {
+            return values().firstOrNull { it.name.equals(value, ignoreCase = true) } ?: DVBAPI
+        }
+    }
+}
+
+/**
+ * Pre-defined domestic provider profile for one-click setup.
+ */
+data class ProviderPreset(
+    val id: String,
+    val name: String,
+    val country: String,
+    val satellite: String,
+    val caids: List<Int>,
+    val defaultPort: Int,
+    val description: String
+) {
+    companion object {
+        fun getAllPresets(): List<ProviderPreset> {
+            return listOf(
+                ProviderPreset("movistar", "Movistar+ / Digital+", "Spain", "Astra 19.2°E / Hispasat 30°W", listOf(0x1810, 0x0100), 10001, "Nagravision / Seca Mediaguard"),
+                ProviderPreset("hdplus", "HD+ Germany", "Germany", "Astra 19.2°E", listOf(0x1830, 0x1843, 0x1860, 0x186A), 10002, "Nagravision HD+ (Astra)"),
+                ProviderPreset("skyde", "Sky Deutschland", "Germany", "Astra 19.2°E", listOf(0x098C, 0x098D, 0x09C4), 10003, "NDS VideoGuard (Astra)"),
+                ProviderPreset("skyit", "Sky Italia", "Italy", "Hotbird 13°E", listOf(0x09CD, 0x093B, 0x0919), 10004, "NDS VideoGuard (Hotbird)"),
+                ProviderPreset("tivusat", "Tivùsat Italy", "Italy", "Hotbird 13°E", listOf(0x183E, 0x183D, 0x1856), 10005, "Nagravision Merlin (Hotbird)"),
+                ProviderPreset("canalplus_fr", "Canal+ / Canalsat", "France", "Astra 19.2°E", listOf(0x0100, 0x0500), 10006, "Seca / Viaccess (Astra)"),
+                ProviderPreset("fransat", "Fransat", "France", "Eutelsat 5°W", listOf(0x0500), 10007, "Viaccess PC5 / PC6"),
+                ProviderPreset("skyuk", "Sky UK / Freesat", "United Kingdom", "Astra 28.2°E", listOf(0x0963, 0x0960), 10008, "NDS VideoGuard (Astra 28.2E)"),
+                ProviderPreset("meo_nos", "MEO / NOS", "Portugal", "Hispasat 30°W", listOf(0x0100, 0x1802), 10009, "Seca / Nagravision (Hispasat)"),
+                ProviderPreset("polsat", "Polsat Box / Canal+ Polska", "Poland", "Hotbird 13°E", listOf(0x1803, 0x1861, 0x0100, 0x1884), 10010, "Nagravision / Seca (Hotbird)"),
+                ProviderPreset("srg_ssr", "SRG SSR", "Switzerland", "Hotbird 13°E", listOf(0x0500), 10011, "Viaccess 5.0 / 6.0"),
+                ProviderPreset("orf", "ORF Digital", "Austria", "Astra 19.2°E", listOf(0x0D95, 0x0648, 0x0650), 10012, "Cryptoworks / Irdeto"),
+                ProviderPreset("dsmart", "D-Smart / Digitürk", "Turkey", "Türksat 42°E / Eutelsat 7°E", listOf(0x092B, 0x0664), 10013, "NDS / Irdeto"),
+                ProviderPreset("vodafone_cable", "Vodafone / Kabel DE", "Germany", "DVB-C (Cable)", listOf(0x09C7, 0x1834), 10014, "NDS / Nagra Cable"),
+                ProviderPreset("tdt_spain", "TDT / Saorview", "Spain / Ireland", "DVB-T/T2 (Terrestrial)", listOf(0x1801, 0x0604), 10015, "Nagravision Terrestrial")
+            )
+        }
+    }
+}
+
+/**
+ * Model representing a server profile (supports both OSCam dvbapi and Newcamd protocols).
  */
 data class OscamServerEntry(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Primary Server",
+    val protocol: ServerProtocol = ServerProtocol.DVBAPI,
     val host: String = "192.168.1.100",
     val port: Int = 9000,
     val user: String = "android_tv",
+    val password: String = "android_tv",
+    val desKey: String = "0102030405060708091011121314",
+    val caid: Int = 0x1810,
     val enabled: Boolean = true,
     val isPrimary: Boolean = true
 )
@@ -408,9 +461,13 @@ class OscamConfigRepository(private val context: Context) {
             val obj = JSONObject().apply {
                 put("id", server.id)
                 put("name", server.name)
+                put("protocol", server.protocol.name)
                 put("host", server.host)
                 put("port", server.port)
                 put("user", server.user)
+                put("password", server.password)
+                put("des_key", server.desKey)
+                put("caid", server.caid)
                 put("enabled", server.enabled)
                 put("is_primary", server.isPrimary)
             }
@@ -429,9 +486,13 @@ class OscamConfigRepository(private val context: Context) {
                     OscamServerEntry(
                         id = obj.optString("id", UUID.randomUUID().toString()),
                         name = obj.optString("name", "Server ${i + 1}"),
+                        protocol = ServerProtocol.fromString(obj.optString("protocol", "DVBAPI")),
                         host = obj.optString("host", "192.168.1.100"),
                         port = obj.optInt("port", 9000),
                         user = obj.optString("user", "android_tv"),
+                        password = obj.optString("password", "android_tv"),
+                        desKey = obj.optString("des_key", "0102030405060708091011121314"),
+                        caid = obj.optInt("caid", 0x1810),
                         enabled = obj.optBoolean("enabled", true),
                         isPrimary = obj.optBoolean("is_primary", i == 0)
                     )
@@ -544,9 +605,13 @@ class OscamConfigRepository(private val context: Context) {
             config.servers.forEach { s ->
                 val sObj = JSONObject().apply {
                     put("name", s.name)
+                    put("protocol", s.protocol.name)
                     put("host", s.host)
                     put("port", s.port)
                     put("user", s.user)
+                    put("password", s.password)
+                    put("des_key", s.desKey)
+                    put("caid", s.caid)
                     put("enabled", s.enabled)
                     put("is_primary", s.isPrimary)
                 }

@@ -300,6 +300,67 @@ The bridge utilizes POSIX `inotify` file watchers to update server addresses, po
 - **Thread Separation**:
   - Thread 1: AIDL binder dispatch loop (`vendor.oscam.cas-service`).
   - Thread 2: DVBAPI TCP receiver & heartbeat loop.
-  - Thread 3: POSIX inotify file system watcher.
-  - Thread 4: Local HTTP Management Server (port 8080).
-  - Thread 5: Local HTTP Stream Descrambler Proxy (port 9191).
+  - Thread 3: Newcamd v5.25 TCP worker & keepalive loop.
+  - Thread 4: POSIX inotify file system watcher.
+  - Thread 5: Local HTTP Management Server (port 8080).
+  - Thread 6: Local HTTP Stream Descrambler Proxy (port 9191).
+
+---
+
+## 9. Multi-Protocol Engine & Newcamd v5.25 Architecture
+
+To support diverse domestic cardsharing environments, the bridge integrates a multi-protocol networking layer capable of handling both **OSCam DVBAPI** and **Newcamd v5.25** connections simultaneously.
+
+```
+                   ┌──────────────────────────────────────────────┐
+                   │            OscamCasPlugin (C++)              │
+                   └───────┬──────────────────────────────┬───────┘
+                           │                              │
+         Protocol == DVBAPI│                              │Protocol == NEWCAMD
+                           ▼                              ▼
+                 ┌───────────────────┐          ┌───────────────────┐
+                 │   DvbapiClient    │          │   NewcamdClient   │
+                 └─────────┬─────────┘          └─────────┬─────────┘
+                           │                              │
+                           │                              ├── [3DES EDE2 Engine]
+                           │                              ├── [DES Key Permutation]
+                           │                              └── [14-Byte XOR Key Derivation]
+                           ▼                              ▼
+               ┌───────────────────────┐      ┌───────────────────────┐
+               │ OSCam [dvbapi] Server │      │  Newcamd v5.25 Server │
+               │  (Port 9000, unencr)  │      │  (Port 10000+, 3DES)  │
+               └───────────────────────┘      └───────────────────────┘
+```
+
+### Self-Contained Triple-DES Cryptographic Engine (`NewcamdClient.cpp`)
+The Newcamd v5.25 client incorporates a zero-dependency, bit-level implementation of the Data Encryption Standard (DES) and Triple-DES (EDE2):
+1. **Permuted Choice & S-Boxes**: Full standard PC-1 (56-bit), PC-2 (48-bit), Initial Permutation (IP), Final Permutation (FP), and S-Boxes 1–8 embedded directly in native C++. No external OpenSSL or BoringSSL dynamic linkage is required, ensuring universal compatibility across Android NDK architectures (`arm64-v8a`, `armeabi-v7a`, `x86_64`).
+2. **Session Key XOR Derivation**:
+   - Upon initial TCP connection, the Newcamd server transmits a 14-byte random initialization vector ($IV_{srv}$).
+   - The client derives a 16-byte session key ($K_{sess}$) by XOR-combining the configured 14-byte DES user key ($K_{des}$) with $IV_{srv}$, expanding to 16 bytes:
+     $$K_{sess}[i] = K_{des}[i] \oplus IV_{srv}[i] \quad (i = 0 \dots 13)$$
+     $$K_{sess}[14] = K_{sess}[0] \oplus K_{sess}[1], \quad K_{sess}[15] = K_{sess}[2] \oplus K_{sess}[3]$$
+3. **Handshake & Login Sequence**:
+   - **`0xE0` (Login Request)**: Username string and DES-hashed password encrypted via Triple-DES with $K_{sess}$.
+   - **`0xE1` (Login Acknowledgement)**: Server responds with card capabilities, available CAID, and provider IDs.
+4. **ECM Dispatch & CW Extraction**:
+   - ECMs are framed with standard Newcamd headers (`0x80` even / `0x81` odd), padded to 8-byte boundaries, and 3DES-encrypted.
+   - Upon response, 16 decrypted bytes yield two 8-byte Control Words (Even and Odd CW), delivered directly to the hardware descrambler.
+
+---
+
+## 10. Domestic Security & Privacy Model
+
+A central design goal of this project is providing television owners with a clean, fully domestic solution for accessing their legitimate subscriptions without relying on untrusted third-party hardware:
+
+1. **Elimination of Rogue "Black Boxes"**:
+   - Inexpensive imported satellite receivers, dongles, and Android boxes frequently ship with modified, closed-source firmware containing hidden backdoors, hardcoded remote telemetry, keyloggers, and botnet clients (e.g. Mirai/Mozi variants).
+   - By running the descrambler client **directly on the official Android TV operating system**, users eliminate the need for foreign hardware on their home network.
+2. **Zero Cloud Telemetry & Complete LAN Isolation**:
+   - The CAS bridge contains zero telemetry, analytics, or outbound internet requirements.
+   - Communication occurs strictly over the private local home network (LAN) between the television and the domestic OSCam/Newcamd server.
+3. **Auditable In-Memory Control Word Processing**:
+   - Subscriptions and keys remain strictly in memory and are written directly to the TV SoC's hardware descrambler registers (`/dev/amstream_mpps`, `/dev/mtk_ca0`, etc.).
+   - No decrypted transport streams or keys are persisted to disk or transmitted to external endpoints.
+
+

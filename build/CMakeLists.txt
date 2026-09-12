@@ -23,6 +23,7 @@ add_library(oscam_bridge STATIC
     bridge/BridgeLogger.cpp
     bridge/DvbapiProtocol.cpp
     bridge/DvbapiClient.cpp
+    bridge/NewcamdClient.cpp
     bridge/SatellitePmtParser.cpp
     bridge/SoftwareDescrambler.cpp
 )
@@ -175,11 +176,22 @@ if(NOT ANDROID)
         GTest::gtest_main
     )
 
+    # Tests Newcamd v5.25 Client & 3DES Crypto
+    add_executable(newcamd_tests
+        tests/NewcamdClientTest.cpp
+    )
+    target_link_libraries(newcamd_tests PRIVATE
+        oscam_bridge
+        GTest::gtest
+        GTest::gtest_main
+    )
+
     enable_testing()
     include(GoogleTest)
     gtest_discover_tests(protocol_tests)
     gtest_discover_tests(chipset_tests)
     gtest_discover_tests(hal_tests)
+    gtest_discover_tests(newcamd_tests)
 endif()
 
 # ---------------------------------------------------------------------------

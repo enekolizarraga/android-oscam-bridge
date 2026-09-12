@@ -16,6 +16,8 @@ Designed for personal domestic research, home lab environments, and legal intero
 
 - [How It Works (Architecture)](#how-it-works-architecture)
 - [Key Features](#key-features)
+- [Multi-Protocol Engine (OSCam DVBAPI & Newcamd v5.25)](#multi-protocol-engine-oscam-dvbapi--newcamd-v525)
+- [Domestic Security & Privacy Advantage](#domestic-security--privacy-advantage)
 - [Supported Hardware SoC Matrix](#supported-hardware-soc-matrix)
 - [Broadcast Delivery Systems](#broadcast-delivery-systems)
 - [Zero-Recompile Web Console Pro](#zero-recompile-web-console-pro)
@@ -85,6 +87,10 @@ This project implements a vendor AIDL CAS plugin (`vendor.oscam.cas.IOscamCasSer
 
 ## Key Features
 
+- **Multi-Protocol Client Engine**: Full native C++ client support for both **OSCam DVBAPI** and **Newcamd v5.25** protocols.
+- **Self-Contained 3DES Crypto**: Custom zero-dependency Triple-DES EDE2 engine with embedded S-boxes and permutation tables — no external OpenSSL or BoringSSL library dependencies on Android TV.
+- **15+ Domestic Provider Presets**: Instant one-click templates for European and international satellite providers (Movistar+, HD+, Sky DE/IT/UK, Tivùsat, Canal+, Fransat, MEO/NOS, Polsat, SRG SSR, ORF, etc.).
+- **Multi-Server & Failover Concurrency**: Configure multiple readers across different ports, protocols, and satellites simultaneously with parallel ping latency diagnostics.
 - **Multi-Brand Hardware Abstraction**: Automated SoC architecture detection at boot with specialized descrambler drivers for **Amlogic**, **MediaTek**, **Realtek**, **Broadcom**, **Synaptics**, and **Novatek**.
 - **Satellite DVB-S2 Default**: Built specifically with European/North American satellite broadcasts in mind, pre-configured with active CAIDs for Astra 19.2°E, Hispasat 30°W, Hotbird 13°E, and Eutelsat 5W.
 - **Zero-Recompilation Workflow**: Modify server IP, port, credentials, CAIDs, and delivery standards on the fly:
@@ -101,6 +107,58 @@ This project implements a vendor AIDL CAS plugin (`vendor.oscam.cas.IOscamCasSer
 - **High-Speed In-Memory CW Cache**: Eliminates redundant network round-trips for channels sharing ECMs or duplicate keys.
 - **Failover & Multi-Server Matrix**: Define primary and backup OSCam servers with parallel ping benchmarking (`/api/test_all`).
 - **SELinux & VINTF Ready**: Fully compatible with Android's `@VintfStability` requirements and includes production `.te` and `.cil` SELinux policies.
+
+---
+
+## Multi-Protocol Engine (OSCam DVBAPI & Newcamd v5.25)
+
+The bridge features a flexible, multi-reader network layer allowing your Android TV to connect to different domestic cardservers:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       ANDROID TV CAS BRIDGE ENGINE                          │
+│                                                                             │
+│  [Server 1: Local OSCam]  ──► DVBAPI Protocol (TCP:9000) ──► Movistar+ 0x1810│
+│  [Server 2: HD+ Reader]   ──► Newcamd v5.25   (TCP:10001)──► HD+ Astra 0x1830│
+│  [Server 3: Tivùsat Box]  ──► Newcamd v5.25   (TCP:10005)──► Tivùsat   0x183E│
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Pre-Configured Provider Templates
+
+| Provider | Orbital Position | CAID | Protocol | Default Port |
+|---|---|---|---|---|
+| **Movistar+** | Astra 19.2°E / Hispasat 30°W | `0x1810` | DVBAPI / Newcamd | `9000` / `10000` |
+| **HD+ Germany** | Astra 19.2°E | `0x1830`, `0x1843` | Newcamd | `10001` |
+| **Sky Deutschland** | Astra 19.2°E | `0x098D`, `0x098C` | Newcamd | `10002` |
+| **Sky Italia** | Hotbird 13.0°E | `0x09CD` | Newcamd | `10003` |
+| **Sky UK** | Astra 28.2°E | `0x0963` | Newcamd | `10004` |
+| **Tivùsat** | Hotbird 13.0°E | `0x183E`, `0x1856` | Newcamd | `10005` |
+| **Canal+ France** | Astra 19.2°E | `0x0100`, `0x1811` | Newcamd | `10006` |
+| **Fransat** | Eutelsat 5.0°W | `0x0500` | Newcamd | `10007` |
+| **MEO / NOS** | Hispasat 30.0°W | `0x0100`, `0x1802` | Newcamd | `10008` |
+| **Polsat Box** | Hotbird 13.0°E | `0x1803`, `0x1861` | Newcamd | `10009` |
+| **SRG SSR** | Hotbird 13.0°E | `0x0500` | Newcamd | `10010` |
+| **ORF Digital** | Astra 19.2°E | `0x0D95`, `0x0648` | Newcamd | `10011` |
+| **D-Smart** | Türksat 42.0°E | `0x092B` | Newcamd | `10012` |
+| **Vodafone Cable** | DVB-C | `0x098E`, `0x1838` | Newcamd | `10013` |
+| **Saorview / TDT** | DVB-T/T2 | `0x1801`, `0x0500` | Newcamd | `10014` |
+
+---
+
+## Domestic Security & Privacy Advantage
+
+Many consumers purchase low-cost imported satellite receivers or generic "smart boxes" to descramble domestic satellite broadcasts. However, these devices present severe cybersecurity and privacy risks:
+
+1. **No Backdoors or Malware**:
+   - Inexpensive third-party TV boxes often run obscure closed-source Android forks that bundle hidden botnets, remote backdoors, and background telemetry servers communicating with unverified overseas IP addresses.
+   - This project is **100% open-source, self-hosted, and transparent**. Every line of C++ and Kotlin code can be inspected and compiled by the user.
+2. **Local-Only LAN Execution**:
+   - The CAS bridge operates **strictly within your private home network**. It makes zero outbound internet requests, uses no third-party trackers, and requires no external licensing servers.
+3. **Hardware-Enforced Control Word Handling**:
+   - Descrambling keys are passed in-memory directly from the network socket into the TV's hardware decryption registers.
+   - Subscriptions, passwords, and DES keys never leave your home network.
+
 
 ---
 
