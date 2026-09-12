@@ -1,4 +1,4 @@
-﻿package com.lizarragaeus.oscambridge
+package com.lizarragaeus.oscambridge
 
 import android.content.Context
 import android.util.Log
@@ -102,6 +102,7 @@ class OscamLocalConfigWebServer(
                 // Diagnostics & Tests
                 createContext("/api/test", ApiTestHandler())
                 createContext("/api/test_all", ApiTestAllHandler())
+                createContext("/api/servers/discover", ApiDiscoverServersHandler())
                 createContext("/api/cache/clear", ApiCacheClearHandler())
                 createContext("/api/ecm_decode", ApiEcmDecodeHandler())
 
@@ -800,6 +801,110 @@ class OscamLocalConfigWebServer(
                     sendJsonResponse(exchange, 200, resObj.toString())
                 } catch (e: Exception) {
                     sendErrorResponse(exchange, 500, e.message ?: "Test all error")
+                }
+            }
+        }
+    }
+
+    /**
+     * Heuristic LAN Auto-Discovery scanner for OSCam / CCcam / Newcamd services.
+     *
+     * IMPORTANT STABILITY NOTICE / LIMITATION:
+     * This auto-discovery mechanism is EXPERIMENTAL and NOT 100% stable across all setups:
+     * 1. Subnet constraints: Detects the active IPv4 interface (/24 subnet). Non-standard topologies
+     *    (e.g., VLAN segmentation, /16 subnets, or multi-homed Wi-Fi + Ethernet) may not be covered.
+     * 2. AP Client Isolation: Many home routers/mesh systems enable Wi-Fi client isolation, blocking
+     *    direct peer-to-peer TCP probes between the TV and local OSCam servers.
+     * 3. Socket Timeout: Uses an aggressive 180ms socket connect timeout to prevent long UI hangs.
+     *    Under congested Wi-Fi or high-latency hops, servers may fail to respond in time (false negative).
+     * 4. Port customisation: Scans standard ports (9000, 12000, 10000, 13000, 8888, 678). Custom
+     *    ports configured in oscam.conf won't be detected.
+     *
+     * For full stability, manual IP & port configuration remains the recommended method.
+     */
+    private inner class ApiDiscoverServersHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    appendLog("Starting LAN Auto-Discovery for active OSCam / CCcam servers...")
+
+                    var localBase = "192.168.1."
+                    try {
+                        val interfaces = NetworkInterface.getNetworkInterfaces()
+                        while (interfaces != null && interfaces.hasMoreElements()) {
+                            val iface = interfaces.nextElement()
+                            if (iface.isUp && !iface.isLoopback) {
+                                val addrs = iface.inetAddresses
+                                while (addrs.hasMoreElements()) {
+                                    val addr = addrs.nextElement()
+                                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                                        val parts = addr.hostAddress.split(".")
+                                        if (parts.size == 4) {
+                                            localBase = "${parts[0]}.${parts[1]}.${parts[2]}."
+                                            break
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Subnet detection error: ${e.message}")
+                    }
+
+                    val commonPorts = listOf(
+                        Triple(9000, "DVBAPI", "OSCam DVBAPI (TCP)"),
+                        Triple(12000, "CCCAM", "CCcam v2.3.0"),
+                        Triple(10000, "NEWCAMD", "Newcamd v5.25"),
+                        Triple(13000, "CS378X", "Camd35 / cs378x"),
+                        Triple(8888, "OSCAM_WEBIF", "OSCam WebIF REST"),
+                        Triple(678, "RADEGAST", "Radegast v3")
+                    )
+
+                    val candidateIps = mutableListOf("127.0.0.1")
+                    for (i in 1..25) candidateIps.add("$localBase$i")
+                    for (i in 100..125) candidateIps.add("$localBase$i")
+                    for (i in 200..215) candidateIps.add("$localBase$i")
+
+                    val scanJobs = candidateIps.flatMap { ip ->
+                        commonPorts.map { (port, protoName, desc) ->
+                            async(Dispatchers.IO) {
+                                var reachable = false
+                                var latency = 0L
+                                try {
+                                    val start = System.currentTimeMillis()
+                                    Socket().use { sock ->
+                                        sock.connect(InetSocketAddress(ip, port), 180)
+                                        reachable = true
+                                    }
+                                    latency = System.currentTimeMillis() - start
+                                } catch (_: Exception) {}
+
+                                if (reachable) {
+                                    JSONObject().apply {
+                                        put("host", ip)
+                                        put("port", port)
+                                        put("protocol", protoName)
+                                        put("description", desc)
+                                        put("latency_ms", latency)
+                                    }
+                                } else null
+                            }
+                        }
+                    }
+
+                    val results = scanJobs.awaitAll().filterNotNull()
+                    val resArray = JSONArray()
+                    results.forEach { resArray.put(it) }
+
+                    appendLog("LAN Auto-Discovery complete: found ${results.size} cardserver services")
+                    val json = JSONObject().apply {
+                        put("success", true)
+                        put("found_count", results.size)
+                        put("servers", resArray)
+                    }
+                    sendJsonResponse(exchange, 200, json.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "Discovery error")
                 }
             }
         }
@@ -1718,6 +1823,7 @@ class OscamLocalConfigWebServer(
                         <button type="button" class="btn btn-outline" style="border-color:#10B981; color:#34D399;" onclick="addServerCard('CS378X')">+ Add Camd35 (cs378x)</button>
                         <button type="button" class="btn btn-outline" style="border-color:#F43F5E; color:#FB7185;" onclick="addServerCard('RADEGAST')">+ Add Radegast</button>
                         <button type="button" class="btn btn-outline" style="border-color:#14B8A6; color:#2DD4BF;" onclick="addServerCard('OSCAM_WEBIF')">+ Add WebIF</button>
+                        <button type="button" class="btn btn-outline" style="border-color:#38BDF8; color:#38BDF8;" onclick="discoverLanServers()">🔍 Auto-Discover OSCam on LAN <span style="font-size:10px; background:#0284C7; color:#fff; padding:2px 6px; border-radius:4px; margin-left:4px;">BETA (No 100% estable)</span></button>
                     </div>
                 </div>
 
@@ -1746,6 +1852,8 @@ class OscamLocalConfigWebServer(
                         <span class="preset-badge" onclick="addServerFromPreset('TDT Spain', '0x1801', 9000, 'DVBAPI')">+ 🇪🇸 TDT / Saorview (0x1801)</span>
                     </div>
                 </div>
+
+                <div id="discovery-results-box" style="display:none; background:rgba(56,189,248,0.06); border:1px solid #0284C7; border-radius:10px; padding:16px; margin-bottom:18px;"></div>
 
                 <div id="server-list-box"></div>
 
@@ -2382,6 +2490,36 @@ class OscamLocalConfigWebServer(
                     }
                 })
                 .catch(function(e) { showAlert('Test all error: ' + e, 'error'); });
+        }
+
+        function discoverLanServers() {
+            var box = document.getElementById('discovery-results-box');
+            box.style.display = 'block';
+            box.innerHTML = '<div style="display:flex; align-items:center; gap:10px; color:#38BDF8;"><span class="status-dot"></span><strong>Scanning local network for active OSCam / CCcam servers (Experimental)...</strong></div>';
+            fetch('/api/servers/discover')
+                .then(function(r) { return r.json(); })
+                .then(function(res) {
+                    var disclaimerHtml = '<div style="margin-top:10px; padding-top:8px; border-top:1px dashed rgba(255,255,255,0.1); font-size:11px; color:var(--text-muted);">' +
+                        '⚠️ <strong>Nota de estabilidad:</strong> El escáner automático es una utilidad heurística experimental y <em>no es 100% estable ni infalible</em>. Puede dar falsos negativos debido a aislamiento AP Wi-Fi, firewalls de Android TV, subredes no estándar o puertos personalizados. Si tu receptor no aparece, agrégalo manualmente con su IP.' +
+                        '</div>';
+
+                    if (!res.servers || res.servers.length === 0) {
+                        box.innerHTML = '<div style="color:var(--text-muted);">No active OSCam servers automatically detected on standard ports in this subnet scan.</div>' + disclaimerHtml;
+                    } else {
+                        var html = '<div style="font-weight:700; color:#38BDF8; margin-bottom:10px;">✓ Discovered ' + res.servers.length + ' Cardserver Service(s) on your LAN:</div><div style="display:flex; flex-direction:column; gap:8px;">';
+                        res.servers.forEach(function(s) {
+                            html += '<div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.3); padding:8px 14px; border-radius:6px; border:1px solid rgba(255,255,255,0.06);">' +
+                                '<div><strong style="color:var(--primary);">' + s.protocol + '</strong> <span style="color:#FFF; font-weight:700; margin-left:6px;">' + s.host + ':' + s.port + '</span> <span style="font-size:11px; color:var(--text-muted); margin-left:6px;">(' + s.description + ', ' + s.latency_ms + 'ms)</span></div>' +
+                                '<button type="button" class="btn btn-primary" style="padding:4px 12px; font-size:12px;" onclick="addServerFromPreset(\'' + s.protocol + ' @ ' + s.host + '\', \'0x1810\', ' + s.port + ', \'' + s.protocol + '\')">+ Add to Config</button>' +
+                            '</div>';
+                        });
+                        html += '</div>' + disclaimerHtml;
+                        box.innerHTML = html;
+                    }
+                })
+                .catch(function(e) {
+                    box.innerHTML = '<div style="color:var(--danger);">Discovery error: ' + e + '</div>';
+                });
         }
 
         function renderChannelsTable(channels) {

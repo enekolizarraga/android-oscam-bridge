@@ -1,4 +1,4 @@
-﻿package com.lizarragaeus.oscambridge
+package com.lizarragaeus.oscambridge
 
 import android.content.Context
 import android.media.MediaCas
@@ -107,8 +107,37 @@ class OscamTvInputBridge(private val context: Context) {
         }
     }
 
+    data class CachedControlWord(
+        val controlWord: ByteArray,
+        val timestampMs: Long,
+        val parity: Int
+    )
+
+    private val cwCache = java.util.concurrent.ConcurrentHashMap<Long, CachedControlWord>()
+    private val cacheHits = java.util.concurrent.atomic.AtomicLong(0)
+    private val cacheMisses = java.util.concurrent.atomic.AtomicLong(0)
+
+    fun getCacheHitCount(): Long = cacheHits.get()
+    fun getCacheMissCount(): Long = cacheMisses.get()
+    fun clearCache() = cwCache.clear()
+
+    private fun computeEcmCrc(data: ByteArray): Long {
+        val crc = java.util.zip.CRC32()
+        crc.update(data)
+        return crc.value
+    }
+
+    /**
+     * Records resolved Control Word in cache for instantaneous duplicate hits.
+     */
+    fun recordResolvedCw(ecmData: ByteArray, cw: ByteArray, parity: Int) {
+        val hash = computeEcmCrc(ecmData)
+        cwCache[hash] = CachedControlWord(cw.clone(), System.currentTimeMillis(), parity)
+    }
+
     /**
      * Forwards raw ECM packet from Tuner HAL to active MediaCas session.
+     * Checks in-memory CW cache first to eliminate unnecessary network roundtrips.
      */
     fun processEcm(ecmData: ByteArray) {
         val session = activeSession
@@ -117,9 +146,21 @@ class OscamTvInputBridge(private val context: Context) {
             return
         }
 
+        val ecmHash = computeEcmCrc(ecmData)
+        val cached = cwCache[ecmHash]
+        val now = System.currentTimeMillis()
+        if (cached != null && (now - cached.timestampMs < 9500)) {
+            cacheHits.incrementAndGet()
+            Log.d(TAG, "ECM Cache HIT (CRC 0x%08X) - Reusing resolved CW without network roundtrip".format(ecmHash))
+            OscamNativeBridge.nativeSetSoftwareCw(0, cached.parity, cached.controlWord)
+            return
+        }
+
+        cacheMisses.incrementAndGet()
+
         try {
             session.processEcm(ecmData)
-            Log.d(TAG, "Delivered %d-byte ECM to MediaCas".format(ecmData.size))
+            Log.d(TAG, "Delivered %d-byte ECM to MediaCas (Cache Miss)".format(ecmData.size))
         } catch (e: Exception) {
             Log.e(TAG, "Error delivering ECM to MediaCas: ${e.message}", e)
         }
