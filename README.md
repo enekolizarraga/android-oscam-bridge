@@ -493,6 +493,7 @@ android-oscam-bridge/
 
 | Document | Purpose |
 |---|---|
+| [**`docs/TUTORIAL_COMPILACION_Y_CONFIGURACION.md`**](docs/TUTORIAL_COMPILACION_Y_CONFIGURACION.md) | **Guía completa en español**: Tutorial paso a paso para compilar (NDK/CMake/Gradle), instalar en Android TV, configurar todos los parámetros vía web (`:8080`), y funcionamiento del bypass inteligente para canales en abierto (FTA). |
 | [**`docs/INSTALLATION_AND_CONFIGURATION.md`**](docs/INSTALLATION_AND_CONFIGURATION.md) | Comprehensive installation guide (Magisk, ADB, AOSP), compilation steps (4 methods), Web Console Pro guide, OSCam setup, and troubleshooting FAQ. |
 | [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md) | In-depth engineering design, MediaCas framework interaction, DVBAPI protocol internals, hardware key injection mechanics, and software DVB-CSA design. |
 | [**`proto/dvbapi_messages.md`**](proto/dvbapi_messages.md) | Detailed binary packet structures, opcodes, and sequence diagrams for OSCam network DVBAPI communication. |
@@ -518,5 +519,5 @@ See the full legal text in [**`LICENSE.md`**](LICENSE.md).
 
 ### Core License Conditions:
 1. **STRICTLY NON-COMMERCIAL (FORBIDDEN TO SELL)**: You may not use this code, compiled binaries, or derivative works for commercial purposes or financial gain. Selling, renting, charging for access, or monetizing this project in any way is strictly forbidden.
-2. **MANDATORY ATTRIBUTION (CREDITS REQUIRED)**: Any distribution, fork, or modification must retain and prominently display full author credits to **`lizarragaeus`** and the original project repository **`android-oscam-bridge` (`com.lizarragaeus.oscambridge`)**.
+2. **MANDATORY ATTRIBUTION (CREDITS REQUIRED)**: Any distribution, fork, or modification must retain and prominently display full author credits to **`Eneko Lizarraga`** and the original project repository **`android-oscam-bridge` (`com.lizarragaeus.oscambridge`)**.
 3. **SHARE-ALIKE**: If you remix, transform, or build upon the material, you must distribute your contributions under the exact same non-commercial license (CC BY-NC-SA 4.0).
