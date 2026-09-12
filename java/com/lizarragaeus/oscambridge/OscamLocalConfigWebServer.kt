@@ -570,50 +570,103 @@ class OscamLocalConfigWebServer(
             scope.launch {
                 try {
                     val body = exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
-                    val json = JSONObject(body)
+                    Log.i(TAG, "ApiSaveHandler received payload (${body.length} chars): $body")
+                    appendLog("Incoming save request: ${body.length} bytes")
 
-                    val deliveryStr = json.optString("delivery_system", "DVBS")
+                    val json = if (body.isNotBlank()) JSONObject(body) else JSONObject()
+                    val currentConfig = repository.getCurrentConfig()
+
+                    val deliveryStr = json.optString("delivery_system", currentConfig.deliverySystem.name)
                     val delivery = TunerDeliverySystem.fromString(deliveryStr)
-                    val caidsStr = json.optString("caids", "0x1810, 0x1830, 0x0100, 0x0500")
+                    val caidsStr = json.optString("caids", currentConfig.getCaidsCsv())
                     val caids = repository.parseCaidsCsv(caidsStr)
-                    val cwCache = json.optBoolean("cw_cache_enabled", true)
-                    val timeout = json.optInt("timeout_ms", 4000)
-                    val reconnectInterval = json.optInt("reconnect_interval_ms", 2000)
-                    val autoStart = json.optBoolean("autostart", true)
+                    val cwCache = json.optBoolean("cw_cache_enabled", currentConfig.cwCacheEnabled)
+                    val timeout = json.optInt("timeout_ms", currentConfig.connectTimeoutMs)
+                    val reconnectInterval = json.optInt("reconnect_interval_ms", currentConfig.reconnectIntervalMs)
+                    val autoStart = json.optBoolean("autostart", currentConfig.autoStartOnBoot)
 
-                    // Parse Servers (Supports both DVBAPI and NEWCAMD)
+                    // Parse Servers intelligently without destructive overwriting
                     val serversList = mutableListOf<OscamServerEntry>()
                     val serversJsonArray = json.optJSONArray("servers")
+
                     if (serversJsonArray != null && serversJsonArray.length() > 0) {
                         for (i in 0 until serversJsonArray.length()) {
                             val sObj = serversJsonArray.getJSONObject(i)
-                            val protoStr = sObj.optString("protocol", "DVBAPI")
+                            val existing = currentConfig.servers.getOrNull(i)
+
+                            val protoStr = sObj.optString("protocol", existing?.protocol?.name ?: "DVBAPI")
                             val parsedProto = ServerProtocol.fromString(protoStr)
+
+                            // Read parameters, falling back to existing server values (NOT hardcoded factory defaults)
+                            val host = sObj.optString("host", existing?.host ?: "192.168.1.100").trim()
+                            val port = if (sObj.has("port")) sObj.optInt("port") else (existing?.port ?: parsedProto.defaultPort)
+                            val user = sObj.optString("user", existing?.user ?: "android_tv").trim()
+                            val password = sObj.optString("password", existing?.password ?: "android_tv").trim()
+                            val desKey = sObj.optString("des_key", existing?.desKey ?: "0102030405060708091011121314").trim()
+                            val caid = if (sObj.has("caid")) parseHexOrDec(sObj.optString("caid")) else (existing?.caid ?: 0x1810)
+                            val connectTimeout = sObj.optInt("connect_timeout_sec", existing?.connectTimeoutSec ?: 4)
+                            val recvTimeout = sObj.optInt("recv_timeout_sec", existing?.recvTimeoutSec ?: 8)
+                            val reconnectMs = sObj.optInt("reconnect_interval_ms", existing?.reconnectIntervalMs ?: 2000)
+                            val enabled = sObj.optBoolean("enabled", existing?.enabled ?: true)
+                            val isPrimary = sObj.optBoolean("is_primary", existing?.isPrimary ?: (i == 0))
+
                             serversList.add(
                                 OscamServerEntry(
-                                    id = sObj.optString("id", UUID.randomUUID().toString()),
-                                    name = sObj.optString("name", "Server ${i + 1}"),
+                                    id = sObj.optString("id", existing?.id ?: UUID.randomUUID().toString()),
+                                    name = sObj.optString("name", existing?.name ?: "Server ${i + 1}"),
                                     protocol = parsedProto,
-                                    host = sObj.optString("host", "192.168.1.100").trim(),
-                                    port = sObj.optInt("port", parsedProto.defaultPort),
-                                    user = sObj.optString("user", "android_tv").trim(),
-                                    password = sObj.optString("password", "android_tv").trim(),
-                                    desKey = sObj.optString("des_key", "0102030405060708091011121314").trim(),
-                                    caid = parseHexOrDec(sObj.optString("caid", "0x1810")),
-                                    connectTimeoutSec = sObj.optInt("connect_timeout_sec", 4),
-                                    recvTimeoutSec = sObj.optInt("recv_timeout_sec", 8),
-                                    reconnectIntervalMs = sObj.optInt("reconnect_interval_ms", 2000),
-                                    enabled = sObj.optBoolean("enabled", true),
-                                    isPrimary = sObj.optBoolean("is_primary", i == 0)
+                                    host = host,
+                                    port = port,
+                                    user = user,
+                                    password = password,
+                                    desKey = desKey,
+                                    caid = caid,
+                                    connectTimeoutSec = connectTimeout,
+                                    recvTimeoutSec = recvTimeout,
+                                    reconnectIntervalMs = reconnectMs,
+                                    enabled = enabled,
+                                    isPrimary = isPrimary
                                 )
                             )
                         }
-                    }
-                    if (serversList.isEmpty()) {
-                        serversList.add(OscamServerEntry())
+                    } else if (json.has("host") || json.has("server_host")) {
+                        // Support single server passed as root JSON properties (e.g. from curl, REST, or simple forms)
+                        val host = json.optString("host", json.optString("server_host", "192.168.1.100")).trim()
+                        val protoStr = json.optString("protocol", currentConfig.primaryServer.protocol.name)
+                        val parsedProto = ServerProtocol.fromString(protoStr)
+                        val port = json.optInt("port", json.optInt("server_port", parsedProto.defaultPort))
+                        val user = json.optString("user", json.optString("username", currentConfig.primaryServer.user)).trim()
+                        val password = json.optString("password", currentConfig.primaryServer.password).trim()
+                        val desKey = json.optString("des_key", currentConfig.primaryServer.desKey).trim()
+                        val caid = if (json.has("caid")) parseHexOrDec(json.optString("caid")) else currentConfig.primaryServer.caid
+
+                        val updatedPrimary = currentConfig.primaryServer.copy(
+                            host = host,
+                            port = port,
+                            protocol = parsedProto,
+                            user = user,
+                            password = password,
+                            desKey = desKey,
+                            caid = caid,
+                            enabled = json.optBoolean("enabled", true),
+                            isPrimary = true
+                        )
+                        serversList.add(updatedPrimary)
+                        // Preserve any existing secondary servers
+                        currentConfig.servers.filter { it.id != updatedPrimary.id && !it.isPrimary }.forEach {
+                            serversList.add(it)
+                        }
+                    } else {
+                        // No server info sent in this request: PRESERVE current configured servers!
+                        serversList.addAll(currentConfig.servers.ifEmpty { listOf(OscamServerEntry()) })
                     }
 
-                    // Parse Channels
+                    // Ensure at least one server is marked as primary
+                    if (serversList.none { it.isPrimary } && serversList.isNotEmpty()) {
+                        serversList[0] = serversList[0].copy(isPrimary = true)
+                    }
+
+                    // Parse Channels without destructive overwriting
                     val channelsList = mutableListOf<OscamChannelEntry>()
                     val channelsJsonArray = json.optJSONArray("channels")
                     if (channelsJsonArray != null && channelsJsonArray.length() > 0) {
@@ -635,8 +688,11 @@ class OscamLocalConfigWebServer(
                                 )
                             )
                         }
+                    } else if (json.has("channels")) {
+                        // User explicitly provided an empty array
                     } else {
-                        channelsList.addAll(OscamConfig.defaultChannels())
+                        // Preserve existing channels
+                        channelsList.addAll(currentConfig.channels.ifEmpty { OscamConfig.defaultChannels() })
                     }
 
                     // Parse WoL Profiles
@@ -655,7 +711,7 @@ class OscamLocalConfigWebServer(
                             )
                         }
                     } else {
-                        wolList.addAll(OscamConfig.defaultWolProfiles())
+                        wolList.addAll(currentConfig.wolProfiles.ifEmpty { OscamConfig.defaultWolProfiles() })
                     }
 
                     val newConfig = OscamConfig(
@@ -673,10 +729,11 @@ class OscamLocalConfigWebServer(
                     repository.saveConfig(newConfig)
                     onConfigUpdatedCallback(newConfig)
 
-                    appendLog("Configuration saved (${serversList.size} servers [DVBAPI/Newcamd], ${channelsList.size} channels, ${delivery.name})")
+                    appendLog("Configuration saved: ${serversList.size} servers (Primary: ${newConfig.primaryServer.name} [${newConfig.primaryServer.protocol.name}] @ ${newConfig.primaryServer.host}:${newConfig.primaryServer.port}), ${channelsList.size} channels")
                     sendJsonResponse(exchange, 200, "{\"success\":true,\"message\":\"Configuration saved and hot-reloaded successfully\"}")
                 } catch (e: Exception) {
                     appendLog("ERROR saving configuration: ${e.message}")
+                    Log.e(TAG, "Save failed: ${e.message}", e)
                     sendErrorResponse(exchange, 500, "Save failed: ${e.message}")
                 }
             }
