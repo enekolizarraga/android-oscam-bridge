@@ -388,6 +388,14 @@ class StreamDescramblerServer(
     private inner class StreamChannelHandler : HttpHandler {
         override fun handle(exchange: HttpExchange) {
             scope.launch {
+                if (exchange.requestMethod.equals("OPTIONS", ignoreCase = true)) {
+                    exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+                    exchange.responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+                    exchange.responseHeaders.set("Access-Control-Allow-Headers", "*")
+                    exchange.sendResponseHeaders(204, -1)
+                    exchange.responseBody.close()
+                    return@launch
+                }
                 activeStreamCount.incrementAndGet()
                 try {
                     val path = exchange.requestURI.path
@@ -410,6 +418,9 @@ class StreamDescramblerServer(
 
                     // Stream headers
                     exchange.responseHeaders.set("Content-Type", "video/mp2t")
+                    exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+                    exchange.responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+                    exchange.responseHeaders.set("Access-Control-Allow-Headers", "*")
                     exchange.responseHeaders.set("Cache-Control", "no-cache, no-store, must-revalidate")
                     exchange.responseHeaders.set("Pragma", "no-cache")
                     exchange.responseHeaders.set("Accept-Ranges", "none")
@@ -809,6 +820,9 @@ class StreamDescramblerServer(
     private fun sendJsonResponse(exchange: HttpExchange, code: Int, json: String) {
         val bytes = json.toByteArray(Charsets.UTF_8)
         exchange.responseHeaders.set("Content-Type", "application/json; charset=UTF-8")
+        exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+        exchange.responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        exchange.responseHeaders.set("Access-Control-Allow-Headers", "*")
         exchange.sendResponseHeaders(code, bytes.size.toLong())
         exchange.responseBody.write(bytes)
         exchange.responseBody.close()
@@ -817,6 +831,9 @@ class StreamDescramblerServer(
     private fun sendHttpError(exchange: HttpExchange, code: Int, message: String) {
         val bytes = "{\"error\":\"$message\"}".toByteArray(Charsets.UTF_8)
         exchange.responseHeaders.set("Content-Type", "application/json; charset=UTF-8")
+        exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+        exchange.responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        exchange.responseHeaders.set("Access-Control-Allow-Headers", "*")
         exchange.sendResponseHeaders(code, bytes.size.toLong())
         exchange.responseBody.write(bytes)
         exchange.responseBody.close()

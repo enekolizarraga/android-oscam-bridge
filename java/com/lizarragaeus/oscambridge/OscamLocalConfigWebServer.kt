@@ -136,6 +136,8 @@ class OscamLocalConfigWebServer(
                 createContext("/api/cache/test_ecm", ApiCacheTestEcmHandler())
                 createContext("/api/spectrum/scan", ApiSpectrumScanHandler())
                 createContext("/api/tvheadend/config", ApiTvheadendConfigHandler())
+                createContext("/api/stream/channel", WebStreamChannelProxyHandler())
+                createContext("/stream/channel", WebStreamChannelProxyHandler())
 
                 executor = null
                 start()
@@ -729,6 +731,60 @@ class OscamLocalConfigWebServer(
                     }
                 } catch (e: Exception) {
                     sendErrorResponse(exchange, 500, e.message ?: "TVHeadend config error")
+                }
+            }
+        }
+    }
+
+    private inner class WebStreamChannelProxyHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                if (exchange.requestMethod.equals("OPTIONS", ignoreCase = true)) {
+                    exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+                    exchange.responseHeaders.set("Access-Control-Allow-Methods", "GET, OPTIONS, HEAD")
+                    exchange.responseHeaders.set("Access-Control-Allow-Headers", "*")
+                    exchange.sendResponseHeaders(204, -1)
+                    exchange.responseBody.close()
+                    return@launch
+                }
+
+                var connection: HttpURLConnection? = null
+                var inputStream: InputStream? = null
+                try {
+                    val path = exchange.requestURI.path
+                    val sid = path.substringAfterLast("/").toIntOrNull() ?: 30001
+                    val targetUrl = "http://127.0.0.1:9191/stream/channel/$sid"
+
+                    val url = URL(targetUrl)
+                    connection = (url.openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 4000
+                        readTimeout = 15000
+                        requestMethod = "GET"
+                    }
+
+                    exchange.responseHeaders.set("Content-Type", "video/mp2t")
+                    exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+                    exchange.responseHeaders.set("Access-Control-Allow-Methods", "GET, OPTIONS, HEAD")
+                    exchange.responseHeaders.set("Access-Control-Allow-Headers", "*")
+                    exchange.responseHeaders.set("Cache-Control", "no-cache, no-store, must-revalidate")
+                    exchange.responseHeaders.set("Pragma", "no-cache")
+                    exchange.responseHeaders.set("Accept-Ranges", "none")
+                    exchange.sendResponseHeaders(200, 0) // chunked streaming
+
+                    inputStream = connection.inputStream
+                    val outputStream = exchange.responseBody
+                    val buffer = ByteArray(16384)
+                    var bytesRead: Int
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        outputStream.write(buffer, 0, bytesRead)
+                        outputStream.flush()
+                    }
+                } catch (_: Exception) {
+                    // Client disconnected or stream ended
+                } finally {
+                    try { inputStream?.close() } catch (_: Exception) {}
+                    try { connection?.disconnect() } catch (_: Exception) {}
+                    try { exchange.responseBody.close() } catch (_: Exception) {}
                 }
             }
         }
@@ -2593,7 +2649,8 @@ class OscamLocalConfigWebServer(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Android TV CAS Bridge Master Console (OSCam &amp; Newcamd)</title>
+    <title>Android TV CAS Bridge Master Console (OSCam &amp; TVHeadend)</title>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
     <style>
         :root {
             --bg-main: #080B11;
@@ -2835,6 +2892,79 @@ class OscamLocalConfigWebServer(
         td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(255,255,255,0.02); }
+
+        /* Player & Channel Zapper Layout */
+        .player-grid {
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            gap: 16px;
+            align-items: start;
+        }
+        @media (max-width: 900px) {
+            .player-grid { grid-template-columns: 1fr; }
+        }
+        .zapper-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+            max-height: 560px;
+            display: flex;
+            flex-direction: column;
+        }
+        .zapper-list {
+            overflow-y: auto;
+            max-height: 460px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-top: 10px;
+            padding-right: 4px;
+        }
+        .zapper-item {
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.2s;
+        }
+        .zapper-item:hover {
+            border-color: var(--primary);
+            background: rgba(59, 130, 246, 0.1);
+        }
+        .zapper-item.active {
+            border-color: var(--primary);
+            background: rgba(59, 130, 246, 0.2);
+            box-shadow: 0 0 12px rgba(59, 130, 246, 0.3);
+        }
+
+        /* Modals */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(4px);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            padding: 16px;
+        }
+        .modal-box {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-hover);
+            border-radius: 12px;
+            max-width: 620px;
+            width: 100%;
+            padding: 24px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.8);
+            max-height: 90vh;
+            overflow-y: auto;
+        }
 
         /* Presets & Badges */
         .preset-container { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 18px 0; }
@@ -3160,21 +3290,56 @@ class OscamLocalConfigWebServer(
 
                 <!-- SUBSECTION 1: Canales Configurados -->
                 <div id="channel-subview-cfg">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
-                        <div style="font-size:13px; color:var(--text-muted);">
-                            Canales activos en tu televisor. El sistema CAS (Nagravision, Viaccess, etc.) se detecta automáticamente en tiempo real al escribir el CAID.
-                        </div>
-                        <div style="display:flex; gap:8px; align-items:center;">
-                            <input type="text" id="filter-cfg-search" placeholder="Filtrar configurados..." oninput="filterConfiguredChannelsTable()" style="padding:6px 10px; font-size:12px; width:180px;">
-                            <button type="button" class="btn btn-outline" style="padding:6px 12px; font-size:12px;" onclick="addChannelRow()">+ Añadir Canal</button>
-                            <button type="button" class="btn btn-success" style="padding:6px 14px; font-size:12px;" onclick="saveConfiguration()">💾 Guardar Canales</button>
+                    <!-- Barra de herramientas superior y filtros -->
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:14px; margin-bottom:16px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                <input type="text" id="filter-cfg-search" placeholder="🔍 Buscar canal, SID, CAID..." oninput="filterConfiguredChannelsTable()" style="padding:7px 12px; font-size:12px; width:220px;">
+                                <select id="filter-cfg-sat" onchange="filterConfiguredChannelsTable()" style="padding:7px 10px; font-size:12px; width:150px;">
+                                    <option value="all">🛰️ Todos los satélites</option>
+                                    <option value="Astra">Astra 19.2°E</option>
+                                    <option value="Hotbird">Hotbird 13°E</option>
+                                    <option value="Hispasat">Hispasat 30°W</option>
+                                    <option value="TDT">TDT Terrestre</option>
+                                </select>
+                                <select id="filter-cfg-cas" onchange="filterConfiguredChannelsTable()" style="padding:7px 10px; font-size:12px; width:135px;">
+                                    <option value="all">🔒 Todos los CAS</option>
+                                    <option value="FTA">🔓 Solo FTA</option>
+                                    <option value="NAGRA">NAGRA (0x18xx)</option>
+                                    <option value="VIACCESS">VIACCESS (0x05xx)</option>
+                                    <option value="NDS">NDS (0x09xx)</option>
+                                    <option value="CONAX">CONAX (0x0Bxx)</option>
+                                    <option value="SECA">SECA (0x01xx)</option>
+                                    <option value="IRDETO">IRDETO (0x06xx)</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                <button type="button" class="btn btn-primary" style="padding:7px 12px; font-size:12px;" onclick="openNewChannelModal()">➕ Nuevo Canal</button>
+                                <div style="position:relative; display:inline-block;">
+                                    <button type="button" class="btn btn-purple" style="padding:7px 12px; font-size:12px;" onclick="togglePackageMenu()">📦 Añadir Paquete ▾</button>
+                                    <div id="dropdown-packages-menu" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:var(--bg-surface); border:1px solid var(--border-hover); border-radius:8px; width:280px; z-index:100; box-shadow:0 8px 24px rgba(0,0,0,0.7); padding:6px 0;">
+                                        <div class="preset-badge" onclick="addPredefinedPackage('movistar')" style="margin:4px 8px; display:block;">🇪🇸 Movistar+ España HD (LaLiga, Cine, Series)</div>
+                                        <div class="preset-badge" onclick="addPredefinedPackage('hdplus')" style="margin:4px 8px; display:block;">🇩🇪 HD+ Alemania (UHD, RTL, Sat.1)</div>
+                                        <div class="preset-badge" onclick="addPredefinedPackage('skyde')" style="margin:4px 8px; display:block;">🇩🇪 Sky Deutschland (Bundesliga, Cinema)</div>
+                                        <div class="preset-badge" onclick="addPredefinedPackage('tivusat')" style="margin:4px 8px; display:block;">🇮🇹 Tivùsat / Mediaset Italia (Rai 4K)</div>
+                                        <div class="preset-badge" onclick="addPredefinedPackage('srg')" style="margin:4px 8px; display:block;">🇨🇭 SRG SSR Suiza (SRF, RTS, RSI)</div>
+                                        <div class="preset-badge" onclick="addPredefinedPackage('meo')" style="margin:4px 8px; display:block;">🇵🇹 MEO / NOS Portugal (Sport TV)</div>
+                                        <div class="preset-badge" onclick="addPredefinedPackage('tdt')" style="margin:4px 8px; display:block;">📺 TDT España Generalistas FTA</div>
+                                    </div>
+                                </div>
+                                <button type="button" class="btn btn-outline" style="padding:7px 12px; font-size:12px;" onclick="openImportM3uModal()">📥 Importar M3U</button>
+                                <button type="button" class="btn btn-danger" style="padding:7px 12px; font-size:12px;" onclick="deleteSelectedChannels()">🗑️ Borrar Selección</button>
+                                <button type="button" class="btn btn-success" style="padding:7px 14px; font-size:12px;" onclick="saveConfiguration()">💾 Guardar Canales</button>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="table-container" style="max-height:460px; overflow-y:auto;">
+                    <div class="table-container" style="max-height:520px; overflow-y:auto;">
                         <table id="channels-table">
                             <thead>
                                 <tr>
+                                    <th style="width:36px; text-align:center;"><input type="checkbox" id="chk-select-all-cfg" onclick="toggleSelectAllConfigured(this.checked)"></th>
+                                    <th style="width:60px; text-align:center;">Orden</th>
                                     <th>Canal (Nombre)</th>
                                     <th>Satélite</th>
                                     <th>Frec / Pol / SR</th>
@@ -3190,9 +3355,9 @@ class OscamLocalConfigWebServer(
 
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px; flex-wrap:wrap; gap:10px;">
                         <div style="font-size:12px; color:var(--text-muted);">
-                            💡 Modificar cualquier campo o CAID se reflejará directamente en la base de datos y en el descifrador de la TV.
+                            💡 Todos los canales gestionados se reflejan en la parrilla del sintonizador, en el servidor TVHeadend autónomo (puerto 9191) y en el reproductor web integrado.
                         </div>
-                        <button type="button" class="btn btn-success" onclick="saveConfiguration()">Save Channel Database</button>
+                        <button type="button" class="btn btn-success" onclick="saveConfiguration()">💾 Guardar Parrilla de Canales</button>
                     </div>
                 </div>
 
@@ -3523,42 +3688,62 @@ class OscamLocalConfigWebServer(
                     </div>
                 </div>
 
-                <!-- Reproductor Web HTML5 en Vivo con HUD y Selector de Canal -->
-                <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:10px;">
-                        <div style="font-weight:700; font-size:13px; color:#FFF; text-transform:uppercase; letter-spacing:0.5px;">
-                            📺 Reproductor Web Satelital en Vivo (TVHeadend Stream)
+                <!-- Reproductor Web HTML5 en Vivo con HUD, Selector de Canal y Channel Zapper -->
+                <div class="player-grid" style="margin-bottom:18px;">
+                    <!-- Columna Principal de Video -->
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:10px;">
+                            <div style="font-weight:700; font-size:13px; color:#FFF; text-transform:uppercase; letter-spacing:0.5px;">
+                                📺 Reproductor Web Satelital en Vivo (MPEG-TS MSE / TVHeadend)
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="prevChannel()">◀ Anterior</button>
+                                <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="nextChannel()">Siguiente ▶</button>
+                                <button type="button" class="btn btn-primary" style="padding:4px 10px; font-size:11px;" onclick="reloadPlayerStream()">🔄 Recargar</button>
+                            </div>
                         </div>
-                        <div style="display:flex; gap:8px; align-items:center;">
-                            <label for="player-channel-select" style="margin:0; font-size:12px; color:var(--text-muted);">Canal:</label>
-                            <select id="player-channel-select" onchange="onPlayerChannelSelect(this.value)" style="padding:6px 12px; font-size:12px; min-width:220px; background:var(--bg-input); border:1px solid var(--border); color:#FFF; border-radius:6px;"></select>
-                            <button type="button" class="btn btn-outline" style="padding:6px 10px; font-size:11px;" onclick="prevChannel()">◀ Anterior</button>
-                            <button type="button" class="btn btn-outline" style="padding:6px 10px; font-size:11px;" onclick="nextChannel()">Siguiente ▶</button>
+
+                        <!-- Live Channel Telemetry HUD -->
+                        <div id="live-channel-hud" style="background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:8px 14px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px;">
+                            <div>
+                                <span id="hud-channel-name" style="font-weight:800; font-size:15px; color:#38BDF8;">Selecciona un canal</span>
+                                <span id="hud-channel-tp" style="color:var(--text-muted); margin-left:8px;">-- MHz</span>
+                            </div>
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <span id="hud-channel-cas" style="background:rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6; padding:2px 6px; border-radius:4px; font-weight:700; font-size:11px;">CAS AUTO</span>
+                                <span id="hud-channel-caid" style="font-family:monospace; color:#A78BFA;">CAID: --</span>
+                                <span id="hud-channel-status" style="color:#34D399; font-weight:700;">🟢 LISTO</span>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
+                            <input type="text" id="player-stream-url" placeholder="URL de stream directo" value="http://${realIp}:9191/stream/channel/30001" style="flex:1;">
+                            <button type="button" class="btn btn-primary" onclick="loadStreamInPlayer()">▶ Reproducir</button>
+                            <button type="button" class="btn btn-outline" onclick="openStreamInVlc()" title="Abrir en VLC Media Player">🔗 VLC</button>
+                        </div>
+
+                        <div class="player-box" style="position:relative; background:#000; border-radius:8px; overflow:hidden; min-height:340px; display:flex; align-items:center; justify-content:center;">
+                            <video id="live-video-player" controls autoplay style="width:100%; max-height:480px; display:block; background:#000;">
+                                Tu navegador no soporta streaming HTML5 directo.
+                            </video>
+                        </div>
+
+                        <div id="hud-player-stats" style="margin-top:8px; font-size:11px; color:var(--text-muted); font-family:monospace; display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                            <span>Motor: mpegts.js (Hardware Media Source Extensions)</span>
+                            <span id="player-bitrate-label">Bitrate: -- kbps | TS Sync: OK</span>
                         </div>
                     </div>
 
-                    <!-- Live Channel Telemetry HUD -->
-                    <div id="live-channel-hud" style="background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:8px 14px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px;">
-                        <div>
-                            <span id="hud-channel-name" style="font-weight:800; font-size:14px; color:#38BDF8;">Selecciona un canal</span>
-                            <span id="hud-channel-tp" style="color:var(--text-muted); margin-left:8px;">-- MHz</span>
+                    <!-- Channel Zapper Sidebar -->
+                    <div class="zapper-container">
+                        <div style="font-weight:700; font-size:13px; color:#FFF; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                            <span>🛰️ Parrilla de Canales (<span id="zapper-count">0</span>)</span>
+                            <span style="font-size:11px; color:var(--primary); cursor:pointer;" onclick="switchChannelSubtab('cfg'); showTab('tab-channels', document.querySelectorAll('.tab-btn')[2])">Gestionar &gt;</span>
                         </div>
-                        <div style="display:flex; gap:10px; align-items:center;">
-                            <span id="hud-channel-cas" style="background:rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6; padding:2px 6px; border-radius:4px; font-weight:700; font-size:11px;">CAS AUTO</span>
-                            <span id="hud-channel-caid" style="font-family:monospace; color:#A78BFA;">CAID: --</span>
-                            <span id="hud-channel-status" style="color:#34D399; font-weight:700;">🟢 LISTO</span>
+                        <input type="text" id="zapper-search" placeholder="🔍 Buscar canal para ver..." oninput="filterZapperChannels()" style="padding:7px 10px; font-size:12px; margin-bottom:6px;">
+                        <div class="zapper-list" id="player-zapper-list">
+                            <!-- Populated dynamically with channels -->
                         </div>
-                    </div>
-
-                    <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
-                        <input type="text" id="player-stream-url" placeholder="URL de stream directo" value="http://${realIp}:9191/stream/channel/30001" style="flex:1;">
-                        <button type="button" class="btn btn-primary" onclick="loadStreamInPlayer()">▶ Reproducir</button>
-                    </div>
-
-                    <div class="player-box">
-                        <video id="live-video-player" controls autoplay poster="">
-                            Tu navegador no soporta streaming HTML5 directo.
-                        </video>
                     </div>
                 </div>
 
@@ -4087,6 +4272,106 @@ class OscamLocalConfigWebServer(
         </div>
     </div>
 
+    <!-- Modal: Editar / Nuevo Canal -->
+    <div class="modal-overlay" id="modal-channel-edit">
+        <div class="modal-box">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+                <div style="font-weight:800; font-size:16px; color:#FFF;" id="modal-ch-title">➕ Nuevo Canal Satelital</div>
+                <button type="button" class="btn btn-outline" style="padding:2px 8px; font-size:14px;" onclick="closeChannelEditModal()">✕</button>
+            </div>
+            <input type="hidden" id="modal-ch-index" value="-1">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div style="grid-column: span 2;">
+                    <label style="font-size:12px; color:var(--text-muted); font-weight:700;">Nombre del Canal:</label>
+                    <input type="text" id="modal-ch-name" placeholder="Ej: Movistar LaLiga HD" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); font-weight:700;">Satélite / Posición:</label>
+                    <input type="text" id="modal-ch-sat" list="modal-sat-list" placeholder="Astra 19.2°E" style="width:100%;">
+                    <datalist id="modal-sat-list">
+                        <option value="Astra 19.2°E">
+                        <option value="Hotbird 13°E">
+                        <option value="Hispasat 30°W">
+                        <option value="Eutelsat 16°E">
+                        <option value="Thor 0.8°W">
+                        <option value="TDT Terrestre">
+                    </datalist>
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); font-weight:700;">Frecuencia Transponder (MHz):</label>
+                    <input type="number" id="modal-ch-freq" placeholder="10729" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); font-weight:700;">Polarización:</label>
+                    <select id="modal-ch-pol" style="width:100%;">
+                        <option value="V">Vertical (V)</option>
+                        <option value="H">Horizontal (H)</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); font-weight:700;">Symbol Rate (kS/s):</label>
+                    <input type="number" id="modal-ch-sr" placeholder="22000" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); font-weight:700;">Service ID (SID):</label>
+                    <input type="number" id="modal-ch-sid" placeholder="30001" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); font-weight:700;">PMT PID:</label>
+                    <input type="number" id="modal-ch-pmt" placeholder="1024" style="width:100%;">
+                </div>
+                <div style="grid-column: span 2;">
+                    <label style="font-size:12px; color:var(--text-muted); font-weight:700;">CAID Encriptación (ej: 0x1810, 0x0500, 0x098D, 0x0B00 o 0x0000 FTA):</label>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <input type="text" id="modal-ch-caid" placeholder="0x1810" style="flex:1; font-family:monospace;" oninput="updateModalCasBadge()">
+                        <div id="modal-ch-cas-badge" style="min-width:110px;"></div>
+                    </div>
+                </div>
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:18px;">
+                <button type="button" class="btn btn-outline" onclick="closeChannelEditModal()">Cancelar</button>
+                <button type="button" class="btn btn-primary" onclick="saveChannelFromModal()">💾 Guardar Canal</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Importar M3U / JSON -->
+    <div class="modal-overlay" id="modal-import-m3u">
+        <div class="modal-box" style="max-width:680px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div style="font-weight:800; font-size:16px; color:#FFF;">📥 Importar Lista de Canales (M3U / JSON)</div>
+                <button type="button" class="btn btn-outline" style="padding:2px 8px; font-size:14px;" onclick="closeImportM3uModal()">✕</button>
+            </div>
+            <p style="font-size:12px; color:var(--text-muted); margin-bottom:14px;">
+                Carga un archivo <code>.m3u</code>, <code>.m3u8</code> o <code>.json</code> exportado de TVHeadend, Enigma2, TiviMate o pega su contenido de texto. Los nombres, frecuencias, Service IDs y CAIDs serán detectados automáticamente.
+            </p>
+            <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
+                <label class="btn btn-outline" style="cursor:pointer; font-size:12px;">
+                    📂 Seleccionar Archivo M3U/JSON...
+                    <input type="file" id="m3u-file-input" accept=".m3u,.m3u8,.json,.txt" style="display:none;" onchange="handleM3uFileSelected(event)">
+                </label>
+                <span id="m3u-file-name" style="font-size:12px; color:var(--text-muted);">Ningún archivo seleccionado</span>
+            </div>
+            <textarea id="m3u-text-area" rows="9" placeholder="#EXTM3U&#10;#EXTINF:-1 tvg-id=&quot;30001&quot; tvg-name=&quot;Movistar LaLiga HD&quot; group-title=&quot;Astra 19.2E&quot;,Movistar LaLiga HD&#10;http://192.168.1.50:9191/stream/channel/30001" style="width:100%; font-family:monospace; font-size:12px; margin-bottom:12px; padding:10px;"></textarea>
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div style="display:flex; gap:14px; align-items:center;">
+                    <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                        <input type="radio" name="m3u-mode" id="m3u-mode-append" value="append" checked>
+                        <span>Añadir a canales existentes</span>
+                    </label>
+                    <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                        <input type="radio" name="m3u-mode" id="m3u-mode-replace" value="replace">
+                        <span>Reemplazar lista completa</span>
+                    </label>
+                </div>
+                <div style="display:flex; gap:10px;">
+                    <button type="button" class="btn btn-outline" onclick="closeImportM3uModal()">Cancelar</button>
+                    <button type="button" class="btn btn-success" onclick="processM3uImportText()">⚡ Importar Canales</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         var latencyHistory = [];
         var ecmHistory = [];
@@ -4473,105 +4758,550 @@ class OscamLocalConfigWebServer(
 
         var currentConfiguredChannels = [];
 
+        var PREDEFINED_PACKAGES = {
+            movistar: [
+                { name: 'Movistar Plus+ HD', satellite: 'Astra 19.2°E', frequency: 10729, polarization: 'V', symbolRate: 22000, serviceId: 30001, pmtPid: 1024, caid: '0x1810' },
+                { name: 'LaLiga TV por M+ HD', satellite: 'Astra 19.2°E', frequency: 10729, polarization: 'V', symbolRate: 22000, serviceId: 30002, pmtPid: 1025, caid: '0x1810' },
+                { name: 'DAZN LaLiga HD', satellite: 'Astra 19.2°E', frequency: 10729, polarization: 'V', symbolRate: 22000, serviceId: 30003, pmtPid: 1026, caid: '0x1810' },
+                { name: 'Liga de Campeones HD', satellite: 'Astra 19.2°E', frequency: 10788, polarization: 'V', symbolRate: 22000, serviceId: 30004, pmtPid: 1027, caid: '0x1810' },
+                { name: 'Cine por M+ HD', satellite: 'Astra 19.2°E', frequency: 10788, polarization: 'V', symbolRate: 22000, serviceId: 30005, pmtPid: 1028, caid: '0x1810' },
+                { name: 'Series por M+ HD', satellite: 'Astra 19.2°E', frequency: 10788, polarization: 'V', symbolRate: 22000, serviceId: 30006, pmtPid: 1029, caid: '0x1810' },
+                { name: 'Acción por M+ HD', satellite: 'Astra 19.2°E', frequency: 10818, polarization: 'V', symbolRate: 22000, serviceId: 30007, pmtPid: 1030, caid: '0x1810' },
+                { name: 'Documentales por M+ HD', satellite: 'Astra 19.2°E', frequency: 10818, polarization: 'V', symbolRate: 22000, serviceId: 30008, pmtPid: 1031, caid: '0x1810' }
+            ],
+            hdplus: [
+                { name: 'RTL HD', satellite: 'Astra 19.2°E', frequency: 10832, polarization: 'H', symbolRate: 22000, serviceId: 61200, pmtPid: 96, caid: '0x1830' },
+                { name: 'Sat.1 HD', satellite: 'Astra 19.2°E', frequency: 11464, polarization: 'H', symbolRate: 22000, serviceId: 61301, pmtPid: 97, caid: '0x1830' },
+                { name: 'ProSieben HD', satellite: 'Astra 19.2°E', frequency: 11464, polarization: 'H', symbolRate: 22000, serviceId: 61302, pmtPid: 98, caid: '0x1830' },
+                { name: 'VOX HD', satellite: 'Astra 19.2°E', frequency: 10832, polarization: 'H', symbolRate: 22000, serviceId: 61201, pmtPid: 99, caid: '0x1830' },
+                { name: 'Kabel Eins HD', satellite: 'Astra 19.2°E', frequency: 11464, polarization: 'H', symbolRate: 22000, serviceId: 61303, pmtPid: 100, caid: '0x1830' },
+                { name: 'UHD1 by ASTRA / HD+', satellite: 'Astra 19.2°E', frequency: 10994, polarization: 'H', symbolRate: 22000, serviceId: 61400, pmtPid: 101, caid: '0x1830' }
+            ],
+            skyde: [
+                { name: 'Sky Sport Bundesliga 1 HD', satellite: 'Astra 19.2°E', frequency: 11992, polarization: 'H', symbolRate: 27500, serviceId: 260, pmtPid: 100, caid: '0x098D' },
+                { name: 'Sky Sport Top Event HD', satellite: 'Astra 19.2°E', frequency: 11992, polarization: 'H', symbolRate: 27500, serviceId: 261, pmtPid: 101, caid: '0x098D' },
+                { name: 'Sky Cinema Premiere HD', satellite: 'Astra 19.2°E', frequency: 12032, polarization: 'H', symbolRate: 27500, serviceId: 270, pmtPid: 102, caid: '0x098D' },
+                { name: 'Sky Crime HD', satellite: 'Astra 19.2°E', frequency: 12032, polarization: 'H', symbolRate: 27500, serviceId: 271, pmtPid: 103, caid: '0x098D' }
+            ],
+            tivusat: [
+                { name: 'Rai 1 HD', satellite: 'Hotbird 13°E', frequency: 11766, polarization: 'V', symbolRate: 29900, serviceId: 3401, pmtPid: 500, caid: '0x183E' },
+                { name: 'Rai 2 HD', satellite: 'Hotbird 13°E', frequency: 11766, polarization: 'V', symbolRate: 29900, serviceId: 3402, pmtPid: 501, caid: '0x183E' },
+                { name: 'Canale 5 HD', satellite: 'Hotbird 13°E', frequency: 11432, polarization: 'V', symbolRate: 29900, serviceId: 3501, pmtPid: 502, caid: '0x183E' },
+                { name: 'Italia 1 HD', satellite: 'Hotbird 13°E', frequency: 11432, polarization: 'V', symbolRate: 29900, serviceId: 3502, pmtPid: 503, caid: '0x183E' },
+                { name: 'Rai 4K', satellite: 'Hotbird 13°E', frequency: 11075, polarization: 'V', symbolRate: 30000, serviceId: 3600, pmtPid: 504, caid: '0x183E' }
+            ],
+            srg: [
+                { name: 'SRF 1 HD', satellite: 'Hotbird 13°E', frequency: 10971, polarization: 'H', symbolRate: 29700, serviceId: 17201, pmtPid: 600, caid: '0x0500' },
+                { name: 'SRF zwei HD', satellite: 'Hotbird 13°E', frequency: 10971, polarization: 'H', symbolRate: 29700, serviceId: 17202, pmtPid: 601, caid: '0x0500' },
+                { name: 'RTS 1 HD', satellite: 'Hotbird 13°E', frequency: 10971, polarization: 'H', symbolRate: 29700, serviceId: 17203, pmtPid: 602, caid: '0x0500' },
+                { name: 'RSI LA 1 HD', satellite: 'Hotbird 13°E', frequency: 11526, polarization: 'H', symbolRate: 29700, serviceId: 17204, pmtPid: 603, caid: '0x0500' }
+            ],
+            meo: [
+                { name: 'Sport TV 1 HD', satellite: 'Hispasat 30°W', frequency: 12246, polarization: 'H', symbolRate: 27500, serviceId: 401, pmtPid: 700, caid: '0x1802' },
+                { name: 'SIC Noticias', satellite: 'Hispasat 30°W', frequency: 12246, polarization: 'H', symbolRate: 27500, serviceId: 402, pmtPid: 701, caid: '0x1802' },
+                { name: 'TVI HD', satellite: 'Hispasat 30°W', frequency: 12246, polarization: 'H', symbolRate: 27500, serviceId: 403, pmtPid: 702, caid: '0x1802' },
+                { name: 'Eleven Sports 1 HD', satellite: 'Hispasat 30°W', frequency: 12130, polarization: 'H', symbolRate: 27500, serviceId: 404, pmtPid: 703, caid: '0x1802' }
+            ],
+            tdt: [
+                { name: 'La 1 HD', satellite: 'TDT Terrestre', frequency: 578, polarization: 'H', symbolRate: 0, serviceId: 1001, pmtPid: 101, caid: '0x0000' },
+                { name: 'La 2 HD', satellite: 'TDT Terrestre', frequency: 578, polarization: 'H', symbolRate: 0, serviceId: 1002, pmtPid: 102, caid: '0x0000' },
+                { name: 'Antena 3 HD', satellite: 'TDT Terrestre', frequency: 626, polarization: 'H', symbolRate: 0, serviceId: 1003, pmtPid: 103, caid: '0x0000' },
+                { name: 'Cuatro HD', satellite: 'TDT Terrestre', frequency: 650, polarization: 'H', symbolRate: 0, serviceId: 1004, pmtPid: 104, caid: '0x0000' },
+                { name: 'Telecinco HD', satellite: 'TDT Terrestre', frequency: 650, polarization: 'H', symbolRate: 0, serviceId: 1005, pmtPid: 105, caid: '0x0000' },
+                { name: 'laSexta HD', satellite: 'TDT Terrestre', frequency: 626, polarization: 'H', symbolRate: 0, serviceId: 1006, pmtPid: 106, caid: '0x0000' }
+            ]
+        };
+
+        function syncChannelsFromDom() {
+            var rows = document.querySelectorAll('#channels-tbody tr');
+            if (rows.length === 0) return;
+            var updated = [];
+            rows.forEach(function(tr) {
+                var nameEl = tr.querySelector('.ch-name');
+                if (!nameEl) return;
+                var satEl = tr.querySelector('.ch-sat');
+                var freqEl = tr.querySelector('.ch-freq');
+                var polEl = tr.querySelector('.ch-pol');
+                var srEl = tr.querySelector('.ch-sr');
+                var sidEl = tr.querySelector('.ch-sid');
+                var pmtEl = tr.querySelector('.ch-pmt');
+                var caidEl = tr.querySelector('.ch-caid');
+
+                updated.push({
+                    name: nameEl.value.trim(),
+                    satellite: satEl ? satEl.value.trim() : 'Astra 19.2°E',
+                    frequency: freqEl ? (parseInt(freqEl.value, 10) || 10729) : 10729,
+                    polarization: polEl ? polEl.value : 'V',
+                    symbolRate: srEl ? (parseInt(srEl.value, 10) || 22000) : 22000,
+                    serviceId: sidEl ? (parseInt(sidEl.value, 10) || 1) : 1,
+                    pmtPid: pmtEl ? (parseInt(pmtEl.value, 10) || 1024) : 1024,
+                    caid: caidEl ? caidEl.value.trim() : '0x1810',
+                    streamUrl: ''
+                });
+            });
+            if (updated.length > 0) {
+                currentConfiguredChannels = updated;
+            }
+        }
+
         function renderChannelsTable(channels) {
-            currentConfiguredChannels = channels || [];
+            if (channels !== undefined && channels !== null) {
+                currentConfiguredChannels = channels;
+            }
             var countEl = document.getElementById('count-cfg-channels');
             if (countEl) countEl.innerText = currentConfiguredChannels.length;
+
             populatePlayerChannelDropdown(currentConfiguredChannels);
+            renderPlayerChannelZapper(currentConfiguredChannels);
 
             var tbody = document.getElementById('channels-tbody');
+            if (!tbody) return;
             tbody.innerHTML = '';
             if (currentConfiguredChannels.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:18px; color:var(--text-muted);">No hay canales configurados. Añade uno con el botón superior o desde el Catálogo Satélite.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:22px; color:var(--text-muted);">' +
+                    'No hay canales configurados en la parrilla.<br>' +
+                    '<span style="font-size:12px;">Usa "➕ Nuevo Canal", "📦 Añadir Paquete" o "📥 Importar M3U" para añadir canales.</span>' +
+                    '</td></tr>';
                 return;
             }
 
             currentConfiguredChannels.forEach(function(ch, idx) {
                 var tr = document.createElement('tr');
                 tr.id = 'ch-row-' + idx;
+                tr.setAttribute('data-idx', String(idx));
                 var badgeId = 'ch-cas-badge-' + idx;
+
                 tr.innerHTML = 
-                    '<td><input type="text" class="ch-name" value="' + ch.name + '" style="min-width:140px; font-weight:700;"></td>' +
-                    '<td><input type="text" class="ch-sat" value="' + ch.satellite + '" style="min-width:105px;"></td>' +
-                    '<td><div style="display:flex; gap:4px;">' +
-                        '<input type="number" class="ch-freq" value="' + ch.frequency + '" style="width:75px;" title="Frecuencia (MHz)">' +
-                        '<select class="ch-pol" style="width:55px;"><option value="H"' + (ch.polarization==='H'?' selected':'') + '>H</option><option value="V"' + (ch.polarization==='V'?' selected':'') + '>V</option></select>' +
-                        '<input type="number" class="ch-sr" value="' + ch.symbolRate + '" style="width:75px;" title="Symbol Rate">' +
+                    '<td style="text-align:center;"><input type="checkbox" class="cfg-ch-chk" data-idx="' + idx + '" onchange="updateBulkDeleteState()"></td>' +
+                    '<td style="text-align:center; white-space:nowrap;">' +
+                        '<div style="display:flex; gap:3px; justify-content:center;">' +
+                            '<button type="button" class="btn btn-outline" style="padding:1px 5px; font-size:10px;" onclick="moveChannelUp(' + idx + ')" ' + (idx === 0 ? 'disabled' : '') + ' title="Mover canal arriba">▲</button>' +
+                            '<button type="button" class="btn btn-outline" style="padding:1px 5px; font-size:10px;" onclick="moveChannelDown(' + idx + ')" ' + (idx === currentConfiguredChannels.length - 1 ? 'disabled' : '') + ' title="Mover canal abajo">▼</button>' +
+                        '</div>' +
+                    '</td>' +
+                    '<td><input type="text" class="ch-name" value="' + (ch.name || '') + '" style="min-width:130px; font-weight:700;"></td>' +
+                    '<td><input type="text" class="ch-sat" value="' + (ch.satellite || 'Astra 19.2°E') + '" style="min-width:95px;"></td>' +
+                    '<td><div style="display:flex; gap:3px;">' +
+                        '<input type="number" class="ch-freq" value="' + (ch.frequency || 10729) + '" style="width:65px;" title="Frecuencia (MHz)">' +
+                        '<select class="ch-pol" style="width:45px;"><option value="H"' + (ch.polarization === 'H' ? ' selected' : '') + '>H</option><option value="V"' + (ch.polarization === 'V' ? ' selected' : '') + '>V</option></select>' +
+                        '<input type="number" class="ch-sr" value="' + (ch.symbolRate || 22000) + '" style="width:65px;" title="Symbol Rate">' +
                     '</div></td>' +
-                    '<td><div style="display:flex; gap:4px;">' +
-                        '<input type="number" class="ch-sid" value="' + ch.serviceId + '" style="width:70px;" placeholder="SID" title="Service ID">' +
-                        '<input type="number" class="ch-pmt" value="' + ch.pmtPid + '" style="width:70px;" placeholder="PMT" title="PMT PID">' +
+                    '<td><div style="display:flex; gap:3px;">' +
+                        '<input type="number" class="ch-sid" value="' + (ch.serviceId || 1) + '" style="width:60px;" placeholder="SID" title="Service ID">' +
+                        '<input type="number" class="ch-pmt" value="' + (ch.pmtPid || 1024) + '" style="width:60px;" placeholder="PMT" title="PMT PID">' +
                     '</div></td>' +
-                    '<td><input type="text" class="ch-caid" value="' + ch.caid + '" style="width:85px; font-family:monospace;" oninput="onChannelCaidChange(this, \'' + badgeId + '\')"></td>' +
-                    '<td><div id="' + badgeId + '">' + getCasBadgeHtml(ch.caid) + '</div></td>' +
-                    '<td><div style="display:flex; gap:4px;">' +
-                        '<button type="button" class="btn btn-primary" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')" title="Ver canal en reproductor web">▶ Ver en Web</button>' +
-                        '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="testSingleChannelEcm(' + idx + ')" title="Test ECM Descrambler">⚡ Test</button>' +
-                        '<button type="button" class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="removeChannelRow(' + idx + ')" title="Eliminar">×</button>' +
+                    '<td><input type="text" class="ch-caid" value="' + (ch.caid || '0x1810') + '" style="width:75px; font-family:monospace;" oninput="onChannelCaidChange(this, \'' + badgeId + '\')"></td>' +
+                    '<td><div id="' + badgeId + '">' + getCasBadgeHtml(ch.caid || '0x1810') + '</div></td>' +
+                    '<td><div style="display:flex; gap:4px; align-items:center;">' +
+                        '<button type="button" class="btn btn-primary" style="padding:3px 8px; font-size:11px;" onclick="playChannel(' + idx + ')" title="Ver canal en reproductor web">▶ Ver</button>' +
+                        '<button type="button" class="btn btn-outline" style="padding:3px 7px; font-size:11px;" onclick="openChannelEditModal(' + idx + ')" title="Editar información completa">✏️</button>' +
+                        '<button type="button" class="btn btn-outline" style="padding:3px 7px; font-size:11px;" onclick="testSingleChannelEcm(' + idx + ')" title="Test ECM Descrambler">⚡</button>' +
+                        '<button type="button" class="btn btn-danger" style="padding:3px 7px; font-size:11px;" onclick="removeChannelRow(' + idx + ')" title="Eliminar canal">🗑️</button>' +
                     '</div></td>';
                 tbody.appendChild(tr);
             });
+            filterConfiguredChannelsTable();
         }
 
         function filterConfiguredChannelsTable() {
-            var q = (document.getElementById('filter-cfg-search').value || '').toLowerCase().trim();
+            var search = (document.getElementById('filter-cfg-search') ? document.getElementById('filter-cfg-search').value : '').toLowerCase().trim();
+            var satFilter = document.getElementById('filter-cfg-sat') ? document.getElementById('filter-cfg-sat').value : 'all';
+            var casFilter = document.getElementById('filter-cfg-cas') ? document.getElementById('filter-cfg-cas').value : 'all';
+
             document.querySelectorAll('#channels-tbody tr').forEach(function(tr) {
                 var nameEl = tr.querySelector('.ch-name');
+                if (!nameEl) return;
                 var satEl = tr.querySelector('.ch-sat');
                 var caidEl = tr.querySelector('.ch-caid');
-                if (!nameEl) return;
-                var text = (nameEl.value + ' ' + (satEl ? satEl.value : '') + ' ' + (caidEl ? caidEl.value : '')).toLowerCase();
-                tr.style.display = (q === '' || text.indexOf(q) >= 0) ? '' : 'none';
+                var sidEl = tr.querySelector('.ch-sid');
+
+                var nameVal = nameEl ? nameEl.value.toLowerCase() : '';
+                var satVal = satEl ? satEl.value : '';
+                var caidVal = caidEl ? caidEl.value.toUpperCase() : '';
+                var sidVal = sidEl ? sidEl.value : '';
+
+                var matchesSearch = (search === '' || (nameVal + ' ' + satVal.toLowerCase() + ' ' + caidVal.toLowerCase() + ' ' + sidVal).indexOf(search) !== -1);
+                var matchesSat = (satFilter === 'all' || satVal.indexOf(satFilter) !== -1);
+                var matchesCas = true;
+                if (casFilter !== 'all') {
+                    if (casFilter === 'FTA') {
+                        matchesCas = (caidVal === '0X0000' || caidVal === '0X0' || caidVal === '' || caidVal === '0');
+                    } else if (casFilter === 'NAGRA') {
+                        matchesCas = caidVal.indexOf('18') !== -1;
+                    } else if (casFilter === 'VIACCESS') {
+                        matchesCas = caidVal.indexOf('05') !== -1;
+                    } else if (casFilter === 'NDS') {
+                        matchesCas = caidVal.indexOf('09') !== -1;
+                    } else if (casFilter === 'CONAX') {
+                        matchesCas = caidVal.indexOf('0B') !== -1;
+                    } else if (casFilter === 'SECA') {
+                        matchesCas = caidVal.indexOf('01') !== -1;
+                    } else if (casFilter === 'IRDETO') {
+                        matchesCas = caidVal.indexOf('06') !== -1;
+                    }
+                }
+                tr.style.display = (matchesSearch && matchesSat && matchesCas) ? '' : 'none';
             });
         }
 
-        function addChannelRow(preset) {
-            var tbody = document.getElementById('channels-tbody');
-            var idx = tbody.children.length;
-            var tr = document.createElement('tr');
-            tr.id = 'ch-row-' + idx;
-            var badgeId = 'ch-cas-badge-' + idx;
+        function toggleSelectAllConfigured(checked) {
+            document.querySelectorAll('.cfg-ch-chk').forEach(function(chk) {
+                chk.checked = checked;
+            });
+            updateBulkDeleteState();
+        }
 
+        function updateBulkDeleteState() {
+            var anyChecked = false;
+            document.querySelectorAll('.cfg-ch-chk').forEach(function(c) {
+                if (c.checked) anyChecked = true;
+            });
+            var allChk = document.getElementById('chk-select-all-cfg');
+            if (allChk && !anyChecked) allChk.checked = false;
+        }
+
+        function deleteSelectedChannels() {
+            syncChannelsFromDom();
+            var checkedIndices = {};
+            document.querySelectorAll('.cfg-ch-chk:checked').forEach(function(chk) {
+                var idx = parseInt(chk.getAttribute('data-idx'), 10);
+                if (!isNaN(idx)) checkedIndices[idx] = true;
+            });
+
+            var countToDelete = Object.keys(checkedIndices).length;
+            if (countToDelete === 0) {
+                showAlert('Por favor, selecciona los canales que deseas eliminar usando las casillas de verificación.', 'error');
+                return;
+            }
+
+            if (!confirm('¿Seguro que deseas eliminar los ' + countToDelete + ' canales seleccionados de la parrilla?')) {
+                return;
+            }
+
+            currentConfiguredChannels = currentConfiguredChannels.filter(function(ch, idx) {
+                return !checkedIndices[idx];
+            });
+
+            var allChk = document.getElementById('chk-select-all-cfg');
+            if (allChk) allChk.checked = false;
+
+            renderChannelsTable(currentConfiguredChannels);
+            showAlert('✓ ' + countToDelete + ' canal(es) eliminado(s). Pulsa "Guardar Canales" para guardar en memoria persistente.', 'success');
+        }
+
+        function moveChannelUp(idx) {
+            if (idx <= 0 || idx >= currentConfiguredChannels.length) return;
+            syncChannelsFromDom();
+            var tmp = currentConfiguredChannels[idx];
+            currentConfiguredChannels[idx] = currentConfiguredChannels[idx - 1];
+            currentConfiguredChannels[idx - 1] = tmp;
+            renderChannelsTable(currentConfiguredChannels);
+        }
+
+        function moveChannelDown(idx) {
+            if (idx < 0 || idx >= currentConfiguredChannels.length - 1) return;
+            syncChannelsFromDom();
+            var tmp = currentConfiguredChannels[idx];
+            currentConfiguredChannels[idx] = currentConfiguredChannels[idx + 1];
+            currentConfiguredChannels[idx + 1] = tmp;
+            renderChannelsTable(currentConfiguredChannels);
+        }
+
+        function openNewChannelModal() {
+            syncChannelsFromDom();
+            document.getElementById('modal-ch-index').value = '-1';
+            document.getElementById('modal-ch-title').innerText = '➕ Nuevo Canal Satelital';
+            document.getElementById('modal-ch-name').value = 'Nuevo Canal HD';
+            document.getElementById('modal-ch-sat').value = 'Astra 19.2°E';
+            document.getElementById('modal-ch-freq').value = '10729';
+            document.getElementById('modal-ch-pol').value = 'V';
+            document.getElementById('modal-ch-sr').value = '22000';
+            var nextSid = 30001;
+            if (currentConfiguredChannels.length > 0) {
+                var maxSid = Math.max.apply(null, currentConfiguredChannels.map(function(c) { return c.serviceId || 0; }));
+                if (maxSid > 0) nextSid = maxSid + 1;
+            }
+            document.getElementById('modal-ch-sid').value = String(nextSid);
+            document.getElementById('modal-ch-pmt').value = '1024';
+            document.getElementById('modal-ch-caid').value = '0x1810';
+            updateModalCasBadge();
+            document.getElementById('modal-channel-edit').style.display = 'flex';
+        }
+
+        function openChannelEditModal(idx) {
+            syncChannelsFromDom();
+            if (idx < 0 || idx >= currentConfiguredChannels.length) return;
+            var ch = currentConfiguredChannels[idx];
+            document.getElementById('modal-ch-index').value = String(idx);
+            document.getElementById('modal-ch-title').innerText = '✏️ Editar Canal: ' + ch.name;
+            document.getElementById('modal-ch-name').value = ch.name || '';
+            document.getElementById('modal-ch-sat').value = ch.satellite || 'Astra 19.2°E';
+            document.getElementById('modal-ch-freq').value = ch.frequency || 10729;
+            document.getElementById('modal-ch-pol').value = ch.polarization || 'V';
+            document.getElementById('modal-ch-sr').value = ch.symbolRate || 22000;
+            document.getElementById('modal-ch-sid').value = ch.serviceId || 1;
+            document.getElementById('modal-ch-pmt').value = ch.pmtPid || 1024;
+            document.getElementById('modal-ch-caid').value = ch.caid || '0x1810';
+            updateModalCasBadge();
+            document.getElementById('modal-channel-edit').style.display = 'flex';
+        }
+
+        function closeChannelEditModal() {
+            document.getElementById('modal-channel-edit').style.display = 'none';
+        }
+
+        function updateModalCasBadge() {
+            var caid = document.getElementById('modal-ch-caid').value;
+            var badgeEl = document.getElementById('modal-ch-cas-badge');
+            if (badgeEl) {
+                badgeEl.innerHTML = getCasBadgeHtml(caid);
+            }
+        }
+
+        function saveChannelFromModal() {
+            var name = document.getElementById('modal-ch-name').value.trim();
+            if (!name) {
+                showAlert('Por favor, indica un nombre para el canal.', 'error');
+                return;
+            }
+            var sat = document.getElementById('modal-ch-sat').value.trim() || 'Astra 19.2°E';
+            var freq = parseInt(document.getElementById('modal-ch-freq').value, 10) || 10729;
+            var pol = document.getElementById('modal-ch-pol').value || 'V';
+            var sr = parseInt(document.getElementById('modal-ch-sr').value, 10) || 22000;
+            var sid = parseInt(document.getElementById('modal-ch-sid').value, 10) || 1;
+            var pmt = parseInt(document.getElementById('modal-ch-pmt').value, 10) || 1024;
+            var caid = document.getElementById('modal-ch-caid').value.trim() || '0x1810';
+
+            var channelObj = {
+                name: name,
+                satellite: sat,
+                frequency: freq,
+                polarization: pol,
+                symbolRate: sr,
+                serviceId: sid,
+                pmtPid: pmt,
+                caid: caid,
+                streamUrl: ''
+            };
+
+            var editIdx = parseInt(document.getElementById('modal-ch-index').value, 10);
+            if (editIdx >= 0 && editIdx < currentConfiguredChannels.length) {
+                currentConfiguredChannels[editIdx] = channelObj;
+                showAlert('✓ Canal "' + name + '" modificado correctamente. Guarda para aplicar.', 'success');
+            } else {
+                currentConfiguredChannels.push(channelObj);
+                showAlert('✓ Canal "' + name + '" añadido a la lista. Guarda para aplicar.', 'success');
+            }
+
+            closeChannelEditModal();
+            renderChannelsTable(currentConfiguredChannels);
+        }
+
+        function togglePackageMenu() {
+            var menu = document.getElementById('dropdown-packages-menu');
+            if (!menu) return;
+            menu.style.display = (menu.style.display === 'none' || menu.style.display === '') ? 'block' : 'none';
+        }
+
+        window.addEventListener('click', function(e) {
+            var menu = document.getElementById('dropdown-packages-menu');
+            if (menu && menu.style.display === 'block') {
+                if (!e.target.closest('#dropdown-packages-menu') && !e.target.closest('.btn-purple')) {
+                    menu.style.display = 'none';
+                }
+            }
+        });
+
+        function addPredefinedPackage(pkgKey) {
+            var pkg = PREDEFINED_PACKAGES[pkgKey];
+            if (!pkg || pkg.length === 0) return;
+            syncChannelsFromDom();
+
+            var currentSids = {};
+            currentConfiguredChannels.forEach(function(c) {
+                if (c.serviceId) currentSids[c.serviceId] = true;
+            });
+
+            var addedCount = 0;
+            pkg.forEach(function(ch) {
+                if (!currentSids[ch.serviceId]) {
+                    currentConfiguredChannels.push(Object.assign({}, ch));
+                    currentSids[ch.serviceId] = true;
+                    addedCount++;
+                }
+            });
+
+            var menu = document.getElementById('dropdown-packages-menu');
+            if (menu) menu.style.display = 'none';
+
+            renderChannelsTable(currentConfiguredChannels);
+            showAlert('✓ Paquete añadido: ' + addedCount + ' canales nuevos agregados a la lista. Pulsa "Guardar Canales".', 'success');
+        }
+
+        function openImportM3uModal() {
+            document.getElementById('m3u-file-name').innerText = 'Ningún archivo seleccionado';
+            document.getElementById('m3u-text-area').value = '';
+            document.getElementById('modal-import-m3u').style.display = 'flex';
+        }
+
+        function closeImportM3uModal() {
+            document.getElementById('modal-import-m3u').style.display = 'none';
+        }
+
+        function handleM3uFileSelected(event) {
+            var file = event.target.files && event.target.files[0];
+            if (!file) return;
+            document.getElementById('m3u-file-name').innerText = file.name + ' (' + Math.round(file.size / 1024) + ' KB)';
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById('m3u-text-area').value = e.target.result;
+            };
+            reader.readAsText(file);
+        }
+
+        function parseM3uText(text) {
+            var trimmed = text.trim();
+            if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+                try {
+                    var parsed = JSON.parse(trimmed);
+                    if (Array.isArray(parsed)) return parsed;
+                    if (parsed.channels && Array.isArray(parsed.channels)) return parsed.channels;
+                } catch(e) {
+                    console.warn('JSON parse fallback:', e);
+                }
+            }
+
+            var lines = trimmed.split('\n');
+            var channels = [];
+            var currentInfo = null;
+
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim();
+                if (!line) continue;
+
+                if (line.startsWith('#EXTINF:')) {
+                    var name = 'Canal Importado';
+                    var sid = 0;
+                    var group = 'Astra 19.2°E';
+                    var caid = '0x1810';
+
+                    var commaIdx = line.indexOf(',');
+                    if (commaIdx !== -1) {
+                        name = line.substring(commaIdx + 1).trim();
+                    }
+
+                    var tvgIdMatch = line.match(/tvg-id="([^"]+)"/i);
+                    if (tvgIdMatch) {
+                        var parsedId = parseInt(tvgIdMatch[1], 10);
+                        if (!isNaN(parsedId)) sid = parsedId;
+                    }
+
+                    var groupMatch = line.match(/group-title="([^"]+)"/i);
+                    if (groupMatch) {
+                        group = groupMatch[1];
+                    }
+
+                    var upper = (line + ' ' + name).toUpperCase();
+                    if (upper.indexOf('FTA') !== -1 || upper.indexOf('LIBRE') !== -1) caid = '0x0000';
+                    else if (upper.indexOf('NAGRA') !== -1) caid = '0x1810';
+                    else if (upper.indexOf('VIACCESS') !== -1) caid = '0x0500';
+                    else if (upper.indexOf('NDS') !== -1 || upper.indexOf('VIDEOGUARD') !== -1) caid = '0x098D';
+                    else if (upper.indexOf('CONAX') !== -1) caid = '0x0B00';
+                    else if (upper.indexOf('SECA') !== -1) caid = '0x0100';
+
+                    currentInfo = {
+                        name: name,
+                        satellite: group.indexOf('°') !== -1 ? group : 'Astra 19.2°E',
+                        frequency: 10729,
+                        polarization: 'V',
+                        symbolRate: 22000,
+                        serviceId: sid || (30000 + channels.length + 1),
+                        pmtPid: 1024 + channels.length,
+                        caid: caid,
+                        streamUrl: ''
+                    };
+                } else if (!line.startsWith('#') && currentInfo) {
+                    var urlMatch = line.match(/\/stream\/channel\/(\d+)/i);
+                    if (urlMatch) {
+                        currentInfo.serviceId = parseInt(urlMatch[1], 10);
+                    }
+                    currentInfo.streamUrl = line;
+                    channels.push(currentInfo);
+                    currentInfo = null;
+                }
+            }
+            return channels;
+        }
+
+        function processM3uImportText() {
+            var text = document.getElementById('m3u-text-area').value;
+            if (!text || text.trim().length === 0) {
+                showAlert('Por favor, introduce o carga una lista de canales M3U o JSON.', 'error');
+                return;
+            }
+
+            var parsed = parseM3uText(text);
+            if (!parsed || parsed.length === 0) {
+                showAlert('No se pudieron extraer canales del texto. Verifica el formato M3U o JSON.', 'error');
+                return;
+            }
+
+            syncChannelsFromDom();
+            var replaceMode = document.getElementById('m3u-mode-replace').checked;
+            if (replaceMode) {
+                currentConfiguredChannels = parsed;
+            } else {
+                var currentSids = {};
+                currentConfiguredChannels.forEach(function(c) {
+                    if (c.serviceId) currentSids[c.serviceId] = true;
+                });
+                parsed.forEach(function(ch) {
+                    if (!currentSids[ch.serviceId]) {
+                        currentConfiguredChannels.push(ch);
+                        currentSids[ch.serviceId] = true;
+                    }
+                });
+            }
+
+            closeImportM3uModal();
+            renderChannelsTable(currentConfiguredChannels);
+            showAlert('✓ ' + parsed.length + ' canales importados con éxito. Pulsa "Guardar Canales" para persistir.', 'success');
+        }
+
+        function addChannelRow(preset) {
+            syncChannelsFromDom();
             var name = preset ? preset.name : 'Nuevo Canal';
             var sat = preset ? preset.satellite : 'Astra 19.2°E';
             var freq = preset ? preset.frequency : 11000;
             var pol = preset ? preset.polarization : 'H';
             var sr = preset ? preset.symbolRate : 22000;
-            var sid = preset ? preset.serviceId : (100 + idx);
-            var pmt = preset ? preset.pmtPid : (1024 + idx);
+            var sid = preset ? preset.serviceId : (100 + currentConfiguredChannels.length);
+            var pmt = preset ? preset.pmtPid : (1024 + currentConfiguredChannels.length);
             var caid = preset ? preset.caid : '0x1810';
 
-            tr.innerHTML = 
-                '<td><input type="text" class="ch-name" value="' + name + '" style="min-width:140px; font-weight:700;"></td>' +
-                '<td><input type="text" class="ch-sat" value="' + sat + '" style="min-width:105px;"></td>' +
-                '<td><div style="display:flex; gap:4px;">' +
-                    '<input type="number" class="ch-freq" value="' + freq + '" style="width:75px;">' +
-                    '<select class="ch-pol" style="width:55px;"><option value="H"' + (pol==='H'?' selected':'') + '>H</option><option value="V"' + (pol==='V'?' selected':'') + '>V</option></select>' +
-                    '<input type="number" class="ch-sr" value="' + sr + '" style="width:75px;">' +
-                '</div></td>' +
-                '<td><div style="display:flex; gap:4px;">' +
-                    '<input type="number" class="ch-sid" value="' + sid + '" style="width:70px;" placeholder="SID">' +
-                    '<input type="number" class="ch-pmt" value="' + pmt + '" style="width:70px;" placeholder="PMT">' +
-                '</div></td>' +
-                '<td><input type="text" class="ch-caid" value="' + caid + '" style="width:85px; font-family:monospace;" oninput="onChannelCaidChange(this, \'' + badgeId + '\')"></td>' +
-                '<td><div id="' + badgeId + '">' + getCasBadgeHtml(caid) + '</div></td>' +
-                '<td><div style="display:flex; gap:4px;">' +
-                    '<button type="button" class="btn btn-primary" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')" title="Ver canal en reproductor web">▶ Ver en Web</button>' +
-                    '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="testSingleChannelEcm(' + idx + ')">⚡ Test</button>' +
-                    '<button type="button" class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="removeChannelRow(' + idx + ')">×</button>' +
-                '</div></td>';
-            tbody.appendChild(tr);
+            currentConfiguredChannels.push({
+                name: name,
+                satellite: sat,
+                frequency: freq,
+                polarization: pol,
+                symbolRate: sr,
+                serviceId: sid,
+                pmtPid: pmt,
+                caid: caid,
+                streamUrl: ''
+            });
 
-            var countEl = document.getElementById('count-cfg-channels');
-            if (countEl) countEl.innerText = document.querySelectorAll('#channels-tbody tr').length;
-            populatePlayerChannelDropdown(currentConfiguredChannels);
+            renderChannelsTable(currentConfiguredChannels);
         }
 
         function removeChannelRow(idx) {
-            var el = document.getElementById('ch-row-' + idx);
-            if (el) el.remove();
-            var countEl = document.getElementById('count-cfg-channels');
-            if (countEl) countEl.innerText = document.querySelectorAll('#channels-tbody tr').length;
+            syncChannelsFromDom();
+            if (idx >= 0 && idx < currentConfiguredChannels.length) {
+                var name = currentConfiguredChannels[idx].name;
+                currentConfiguredChannels.splice(idx, 1);
+                renderChannelsTable(currentConfiguredChannels);
+                showAlert('Canal "' + name + '" eliminado.', 'success');
+            }
         }
 
         function testSingleChannelEcm(idx) {
@@ -4771,6 +5501,82 @@ class OscamLocalConfigWebServer(
         }
 
         var currentPlayerChannelIdx = 0;
+        var mpegtsPlayerInstance = null;
+
+        function renderPlayerChannelZapper(channels) {
+            var zList = document.getElementById('player-zapper-list');
+            var zCount = document.getElementById('zapper-count');
+            if (!zList) return;
+
+            var chList = channels || currentConfiguredChannels || [];
+            if (zCount) zCount.innerText = chList.length;
+            zList.innerHTML = '';
+
+            if (chList.length === 0) {
+                zList.innerHTML = '<div style="padding:14px; text-align:center; color:var(--text-muted); font-size:12px;">' +
+                    'No hay canales disponibles en la parrilla.<br>Añade canales en la pestaña Canales.' +
+                    '</div>';
+                return;
+            }
+
+            chList.forEach(function(ch, idx) {
+                var item = document.createElement('div');
+                item.className = 'zapper-item' + (idx === currentPlayerChannelIdx ? ' active' : '');
+                item.id = 'zapper-ch-' + idx;
+                item.setAttribute('data-name', (ch.name || '').toLowerCase());
+                item.setAttribute('data-sat', (ch.satellite || '').toLowerCase());
+
+                var casInfo = getCasSystemInfo(ch.caid || '0x1810');
+                var casBadge = '<span style="background:' + casInfo.color + '22; color:' + casInfo.color + '; border:1px solid ' + casInfo.color + '; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700;">' + casInfo.code + '</span>';
+
+                item.innerHTML = 
+                    '<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">' +
+                        '<div style="display:flex; align-items:center; gap:8px; min-width:0;">' +
+                            '<span style="color:var(--primary); font-family:monospace; font-weight:800; font-size:12px; min-width:24px;">#' + (idx + 1) + '</span>' +
+                            '<span style="font-weight:700; color:#FFF; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (ch.name || 'Canal ' + (idx + 1)) + '</span>' +
+                        '</div>' +
+                        casBadge +
+                    '</div>' +
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:3px; font-size:11px; color:var(--text-muted);">' +
+                        '<span>' + (ch.satellite || 'Satelital') + ' (' + (ch.frequency || '') + ' ' + (ch.polarization || '') + ')</span>' +
+                        '<span style="font-family:monospace;">SID:' + (ch.serviceId || 1) + '</span>' +
+                    '</div>';
+
+                item.onclick = function() {
+                    zapToChannel(idx);
+                };
+
+                zList.appendChild(item);
+            });
+        }
+
+        function filterZapperChannels() {
+            var q = (document.getElementById('zapper-search') ? document.getElementById('zapper-search').value : '').toLowerCase().trim();
+            document.querySelectorAll('#player-zapper-list .zapper-item').forEach(function(el) {
+                var name = el.getAttribute('data-name') || '';
+                var sat = el.getAttribute('data-sat') || '';
+                el.style.display = (q === '' || name.indexOf(q) !== -1 || sat.indexOf(q) !== -1) ? 'block' : 'none';
+            });
+        }
+
+        function zapToChannel(idx) {
+            if (idx < 0 || idx >= currentConfiguredChannels.length) return;
+            currentPlayerChannelIdx = idx;
+
+            document.querySelectorAll('#player-zapper-list .zapper-item').forEach(function(el) {
+                el.classList.remove('active');
+            });
+            var activeItem = document.getElementById('zapper-ch-' + idx);
+            if (activeItem) {
+                activeItem.classList.add('active');
+                activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+
+            var select = document.getElementById('player-channel-select');
+            if (select) select.value = idx;
+
+            playChannel(idx);
+        }
 
         function populatePlayerChannelDropdown(channels) {
             var select = document.getElementById('player-channel-select');
@@ -4786,7 +5592,7 @@ class OscamLocalConfigWebServer(
             channels.forEach(function(ch, i) {
                 var opt = document.createElement('option');
                 opt.value = i;
-                opt.innerText = ch.name + ' (' + (ch.frequency || '') + ' ' + (ch.polarization || '') + ' SID:' + ch.serviceId + ')';
+                opt.innerText = '#' + (i + 1) + ' ' + ch.name + ' (' + (ch.frequency || '') + ' ' + (ch.polarization || '') + ' SID:' + ch.serviceId + ')';
                 select.appendChild(opt);
             });
         }
@@ -4794,38 +5600,43 @@ class OscamLocalConfigWebServer(
         function onPlayerChannelSelect(val) {
             var idx = parseInt(val, 10);
             if (!isNaN(idx) && idx >= 0 && idx < currentConfiguredChannels.length) {
-                playChannel(idx);
+                zapToChannel(idx);
             }
         }
 
         function prevChannel() {
             if (currentConfiguredChannels.length === 0) return;
             currentPlayerChannelIdx = (currentPlayerChannelIdx - 1 + currentConfiguredChannels.length) % currentConfiguredChannels.length;
-            var select = document.getElementById('player-channel-select');
-            if (select) select.value = currentPlayerChannelIdx;
-            playChannel(currentPlayerChannelIdx);
+            zapToChannel(currentPlayerChannelIdx);
         }
 
         function nextChannel() {
             if (currentConfiguredChannels.length === 0) return;
             currentPlayerChannelIdx = (currentPlayerChannelIdx + 1) % currentConfiguredChannels.length;
-            var select = document.getElementById('player-channel-select');
-            if (select) select.value = currentPlayerChannelIdx;
-            playChannel(currentPlayerChannelIdx);
+            zapToChannel(currentPlayerChannelIdx);
         }
 
         function playChannel(idx) {
-            var tr = document.getElementById('ch-row-' + idx);
-            var name = tr ? tr.querySelector('.ch-name').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].name : 'Canal');
-            var sid = tr ? (parseInt(tr.querySelector('.ch-sid').value, 10) || 1) : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].serviceId : 1);
-            var caid = tr ? tr.querySelector('.ch-caid').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].caid : '0x1810');
-            var freq = tr ? tr.querySelector('.ch-freq').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].frequency : 10729);
-            var pol = tr ? tr.querySelector('.ch-pol').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].polarization : 'V');
-            var sat = tr ? tr.querySelector('.ch-sat').value : (currentConfiguredChannels[idx] ? currentConfiguredChannels[idx].satellite : 'Astra 19.2°E');
-
+            syncChannelsFromDom();
+            if (idx < 0 || idx >= currentConfiguredChannels.length) return;
             currentPlayerChannelIdx = idx;
+
+            var ch = currentConfiguredChannels[idx];
+            var name = ch.name || 'Canal';
+            var sid = ch.serviceId || 1;
+            var caid = ch.caid || '0x1810';
+            var freq = ch.frequency || 10729;
+            var pol = ch.polarization || 'V';
+            var sat = ch.satellite || 'Astra 19.2°E';
+
             var select = document.getElementById('player-channel-select');
             if (select) select.value = idx;
+
+            document.querySelectorAll('#player-zapper-list .zapper-item').forEach(function(el) {
+                el.classList.remove('active');
+            });
+            var activeItem = document.getElementById('zapper-ch-' + idx);
+            if (activeItem) activeItem.classList.add('active');
 
             playChannelInWeb(sid, name, caid, freq + ' ' + pol, sat);
         }
@@ -4833,8 +5644,10 @@ class OscamLocalConfigWebServer(
         function playChannelInWeb(serviceId, name, caid, freq, sat) {
             var host = window.location.hostname || '127.0.0.1';
             var tvhPort = document.getElementById('tvh-port') ? document.getElementById('tvh-port').value : '9191';
-            var url = 'http://' + host + ':' + tvhPort + '/stream/channel/' + (serviceId || 1);
-            document.getElementById('player-stream-url').value = url;
+            var directUrl = 'http://' + host + ':' + tvhPort + '/stream/channel/' + (serviceId || 1);
+            
+            var urlInput = document.getElementById('player-stream-url');
+            if (urlInput) urlInput.value = directUrl;
 
             var nameEl = document.getElementById('hud-channel-name');
             if (nameEl) nameEl.innerText = name;
@@ -4852,28 +5665,132 @@ class OscamLocalConfigWebServer(
             if (caidEl) caidEl.innerText = 'CAID: ' + (caid || '--') + ' / SID: ' + serviceId;
             var statusEl = document.getElementById('hud-channel-status');
             if (statusEl) {
-                statusEl.innerText = '🟢 TRANSMITIENDO TS';
-                statusEl.style.color = '#34D399';
+                statusEl.innerText = '🟡 SINTONIZANDO TS...';
+                statusEl.style.color = '#FBBF24';
             }
 
+            // Switch to Tab 5 (Live Player) if not already active
             var tabButtons = document.querySelectorAll('.tab-btn');
-            if (tabButtons[4]) showTab('tab-player', tabButtons[4]);
+            if (tabButtons[4] && !tabButtons[4].classList.contains('active')) {
+                showTab('tab-player', tabButtons[4]);
+            }
+
             loadStreamInPlayer();
-            showAlert('▶ Sintonizando ' + name + ' en TVHeadend Web Player', 'success');
+        }
+
+        function destroyMpegtsPlayer() {
+            if (mpegtsPlayerInstance) {
+                try {
+                    mpegtsPlayerInstance.pause();
+                    mpegtsPlayerInstance.unload();
+                    mpegtsPlayerInstance.detachMediaElement();
+                    mpegtsPlayerInstance.destroy();
+                } catch(e) {
+                    console.warn('Error destroying mpegtsPlayerInstance:', e);
+                }
+                mpegtsPlayerInstance = null;
+            }
         }
 
         function loadStreamInPlayer() {
-            var url = document.getElementById('player-stream-url').value;
+            destroyMpegtsPlayer();
+
             var video = document.getElementById('live-video-player');
-            if (!video) return;
-            video.src = url;
+            var streamUrl = document.getElementById('player-stream-url') ? document.getElementById('player-stream-url').value : '';
+            var bitrateLabel = document.getElementById('player-bitrate-label');
+            var statusEl = document.getElementById('hud-channel-status');
+
+            if (!video || !streamUrl) return;
+
+            if (statusEl) {
+                statusEl.innerText = '🟢 TRANSMITIENDO MPEG-TS';
+                statusEl.style.color = '#34D399';
+            }
+
+            // Check if mpegts.js MSE is available
+            if (window.mpegts && window.mpegts.isSupported()) {
+                try {
+                    mpegtsPlayerInstance = window.mpegts.createPlayer({
+                        type: 'mse',
+                        isLive: true,
+                        url: streamUrl
+                    }, {
+                        enableWorker: true,
+                        lazyLoadMaxDuration: 3 * 60,
+                        seekType: 'range',
+                        liveBufferLatencyChasing: true,
+                        liveBufferLatencyMaxLatency: 2.5,
+                        liveBufferLatencyMinRemain: 0.8,
+                        autoCleanupSourceBuffer: true
+                    });
+
+                    mpegtsPlayerInstance.attachMediaElement(video);
+                    mpegtsPlayerInstance.load();
+                    
+                    var playPromise = mpegtsPlayerInstance.play();
+                    if (playPromise !== undefined) {
+                        playPromise.catch(function(err) {
+                            console.warn('Auto-play blocked or stream starting:', err);
+                        });
+                    }
+
+                    mpegtsPlayerInstance.on(window.mpegts.Events.STATISTICS_INFO, function(stat) {
+                        if (bitrateLabel && stat) {
+                            var speedKbps = stat.speed ? (stat.speed * 8 / 1024).toFixed(0) : '--';
+                            var fps = stat.currentFps ? stat.currentFps.toFixed(0) : '--';
+                            var dropped = stat.droppedFrames || 0;
+                            bitrateLabel.innerText = 'Bitrate: ' + speedKbps + ' kbps | FPS: ' + fps + ' | Perdidos: ' + dropped + ' | TS Sync: OK';
+                        }
+                    });
+
+                    mpegtsPlayerInstance.on(window.mpegts.Events.ERROR, function(type, detail, info) {
+                        console.warn('mpegts error event:', type, detail, info);
+                        if (statusEl) {
+                            statusEl.innerText = '🟡 RECONECTANDO TS... (' + (detail || 'Stream') + ')';
+                            statusEl.style.color = 'var(--warning)';
+                        }
+                    });
+
+                    return;
+                } catch(err) {
+                    console.warn('Failed to initialize mpegts.js, falling back to native player:', err);
+                }
+            }
+
+            // Native HTML5 Video Fallback (e.g. Safari or proxy HLS)
+            video.src = streamUrl;
             video.play().catch(function(err) {
-                var statusEl = document.getElementById('hud-channel-status');
                 if (statusEl) {
                     statusEl.innerText = '🟡 STREAM TS ACTIVO (Reproducible en TiviMate / VLC / ExoPlayer)';
                     statusEl.style.color = 'var(--warning)';
                 }
             });
+        }
+
+        function reloadPlayerStream() {
+            showAlert('Recargando streaming MPEG-TS del canal...', 'success');
+            loadStreamInPlayer();
+        }
+
+        function openStreamInVlc() {
+            var streamUrl = document.getElementById('player-stream-url') ? document.getElementById('player-stream-url').value : '';
+            var chName = document.getElementById('hud-channel-name') ? document.getElementById('hud-channel-name').innerText : 'Canal';
+            if (!streamUrl) {
+                showAlert('No hay ninguna URL de stream seleccionada.', 'error');
+                return;
+            }
+
+            var m3uContent = '#EXTM3U\n#EXTINF:-1,' + chName + '\n' + streamUrl + '\n';
+            var blob = new Blob([m3uContent], { type: 'audio/x-mpegurl' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = (chName.replace(/[^a-zA-Z0-9_-]/g, '_')) + '.m3u';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showAlert('✓ Descargando archivo .m3u para abrir en VLC Media Player.', 'success');
         }
 
         // TVHeadend Autonomous Server Configuration
@@ -5316,30 +6233,8 @@ class OscamLocalConfigWebServer(
                 });
             });
 
-            var channels = [];
-            document.querySelectorAll('#channels-tbody tr').forEach(function(tr) {
-                var nameEl = tr.querySelector('.ch-name');
-                if (!nameEl) return;
-                var satEl = tr.querySelector('.ch-sat');
-                var freqEl = tr.querySelector('.ch-freq');
-                var polEl = tr.querySelector('.ch-pol');
-                var srEl = tr.querySelector('.ch-sr');
-                var sidEl = tr.querySelector('.ch-sid');
-                var pmtEl = tr.querySelector('.ch-pmt');
-                var caidEl = tr.querySelector('.ch-caid');
-
-                channels.push({
-                    name: nameEl ? nameEl.value : 'Channel',
-                    satellite: satEl ? satEl.value : 'Astra 19.2°E',
-                    frequency: freqEl ? (parseInt(freqEl.value, 10) || 11000) : 11000,
-                    polarization: polEl ? polEl.value : 'H',
-                    symbolRate: srEl ? (parseInt(srEl.value, 10) || 22000) : 22000,
-                    serviceId: sidEl ? (parseInt(sidEl.value, 10) || 1) : 1,
-                    pmtPid: pmtEl ? (parseInt(pmtEl.value, 10) || 100) : 100,
-                    caid: caidEl ? caidEl.value : '0x1810',
-                    streamUrl: ''
-                });
-            });
+            syncChannelsFromDom();
+            var channels = (currentConfiguredChannels && currentConfiguredChannels.length > 0) ? currentConfiguredChannels : [];
 
             var deliveryEl = document.getElementById('delivery-dropdown');
             var caidsEl = document.getElementById('caids-text-input');
