@@ -1301,7 +1301,8 @@ class OscamLocalConfigWebServer(
                                 while (addrs.hasMoreElements()) {
                                     val addr = addrs.nextElement()
                                     if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                                        val parts = addr.hostAddress.split(".")
+                                        val host = addr.hostAddress
+                                        val parts = host?.split(".") ?: emptyList()
                                         if (parts.size == 4) {
                                             localBase = "${parts[0]}.${parts[1]}.${parts[2]}."
                                             break
