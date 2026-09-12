@@ -1,11 +1,11 @@
 // jni/NativeBridge.h
 //
 // C++ JNI bridge interface between Kotlin/Android layer and native OSCam CAS engine.
-// Enables the Foreground Service and TV Settings UI to control the dvbapi client,
-// monitor real-time metrics, perform connectivity diagnostics, and descramble
-// external streams in software.
+// Supports multi-protocol connections (DVBAPI TCP/UNIX, Cs378x, Radegast, Newcamd, CCcam, WebIF).
+// Provides dual namespace support for  and com.oscam.cas.
 //
-// Author: android-oscam-bridge
+// Author: Eneko Lizarraga (eneko@lizarraga.eus)
+// License: CC BY-NC-SA 4.0 (Non-commercial, Attribution Required)
 
 #pragma once
 
@@ -17,7 +17,7 @@
 #include <atomic>
 #include <cstdint>
 
-#include "../bridge/include/DvbapiClient.h"
+#include "../bridge/include/OscamConnectionManager.h"
 #include "../bridge/include/BridgeLogger.h"
 #include "../bridge/include/SoftwareDescrambler.h"
 #include "../hal/native/include/OscamCasService.h"
@@ -43,6 +43,7 @@ struct NativeBridgeStats {
     std::atomic<uint64_t> emmSentCount{0};
     std::atomic<uint32_t> lastCwTimeMs{0};
     std::atomic<uint32_t> reconnectCount{0};
+    std::atomic<uint32_t> failoverCount{0};
 };
 
 /**
@@ -56,24 +57,54 @@ public:
     NativeBridge& operator=(const NativeBridge&) = delete;
 
     /**
-     * @brief Initializes the native bridge with server network params and CAIDs.
+     * @brief Backward-compatible initialization with default DVBAPI protocol.
      */
     bool initialize(const std::string& host, uint16_t port, const std::vector<uint16_t>& supportedCaids);
 
     /**
-     * @brief Starts the background dvbapi client thread.
+     * @brief Extended initialization with explicit protocol and authentication parameters.
+     */
+    bool initializeEx(const std::string& host, uint16_t port, uint8_t protocol,
+                      const std::string& user, const std::string& password,
+                      const std::string& desKey, const std::vector<uint16_t>& supportedCaids);
+
+    /**
+     * @brief Starts the background connection manager thread.
      */
     bool start();
 
     /**
-     * @brief Stops the client and releases network resources.
+     * @brief Stops all active connections and releases resources.
      */
     void stop();
 
     /**
-     * @brief Tests TCP connectivity to the OSCam server with a specified timeout.
+     * @brief Tests connectivity to the OSCam server using the selected protocol.
      */
     bool testConnection(const std::string& host, uint16_t port, int32_t timeoutMs);
+
+    /**
+     * @brief Extended test for specific protocol with credentials.
+     */
+    bool testConnectionEx(const std::string& host, uint16_t port, uint8_t protocol,
+                          const std::string& user, const std::string& password,
+                          const std::string& desKey, int32_t timeoutMs, std::string& outResult);
+
+    /**
+     * @brief Queries WebIF API status from OSCam.
+     */
+    std::string queryWebIfStatus(const std::string& host, uint16_t port,
+                                const std::string& user, const std::string& password);
+
+    /**
+     * @brief Triggers failover to next configured server.
+     */
+    bool failoverNext();
+
+    /**
+     * @brief Returns active server description.
+     */
+    std::string getActiveServerDescription() const;
 
     /**
      * @brief Returns current connection state.
@@ -127,9 +158,13 @@ private:
     mutable std::mutex mutex_;
     std::string host_{"127.0.0.1"};
     uint16_t port_{9000};
+    uint8_t protocol_{0};
+    std::string user_{"android_tv"};
+    std::string password_{"android_tv"};
+    std::string desKey_{"0102030405060708091011121314"};
     std::vector<uint16_t> supportedCaids_;
 
-    std::shared_ptr<dvbapi::DvbapiClient> dvbapiClient_;
+    std::shared_ptr<OscamConnectionManager> connManager_;
     std::shared_ptr<hal::OscamCasService> casService_;
     std::unique_ptr<bridge::SoftwareDescrambler> softwareDescrambler_;
 

@@ -42,14 +42,24 @@ enum class TunerDeliverySystem {
 /**
  * Supported client protocols for domestic card sharing.
  */
-enum class ServerProtocol {
-    DVBAPI,   ///< OSCam native dvbapi protocol (TCP)
-    NEWCAMD,  ///< Newcamd v5.25 protocol with DES/3DES encryption (TCP)
-    CCCAM;    ///< CCcam v2.0.11 / v2.3.0 protocol with RC4/SHA1 encryption (TCP)
+enum class ServerProtocol(val id: Int, val displayName: String, val defaultPort: Int) {
+    DVBAPI(0, "DVBAPI (TCP Socket)", 9000),
+    DVBAPI_UNIX(1, "DVBAPI (UNIX Socket /tmp/camd.socket)", 0),
+    CS378X(2, "Camd35 / Cs378x (TCP Native)", 13000),
+    RADEGAST(3, "Radegast v3 (TCP Port 678)", 678),
+    NEWCAMD(4, "Newcamd v5.25 (3DES)", 10000),
+    CCCAM(5, "CCcam v2.3.0 (RC4)", 12000),
+    OSCAM_WEBIF(6, "OSCam WebIF REST API", 8888);
 
     companion object {
         fun fromString(value: String): ServerProtocol {
-            return values().firstOrNull { it.name.equals(value, ignoreCase = true) } ?: DVBAPI
+            return values().firstOrNull {
+                it.name.equals(value, ignoreCase = true) ||
+                (value.equals("DVBAPI_TCP", ignoreCase = true) && it == DVBAPI)
+            } ?: DVBAPI
+        }
+        fun fromId(id: Int): ServerProtocol {
+            return values().firstOrNull { it.id == id } ?: DVBAPI
         }
     }
 }
@@ -165,6 +175,20 @@ data class OscamConfig(
     val channels: List<OscamChannelEntry> = defaultChannels(),
     val wolProfiles: List<OscamWolEntry> = defaultWolProfiles()
 ) {
+    constructor(
+        serverHost: String,
+        serverPort: Int,
+        username: String,
+        deliverySystem: TunerDeliverySystem = TunerDeliverySystem.DVBS,
+        caids: List<Int> = defaultCaidsFor(deliverySystem),
+        autoStartOnBoot: Boolean = true
+    ) : this(
+        servers = listOf(OscamServerEntry(host = serverHost, port = serverPort, user = username, enabled = true, isPrimary = true)),
+        deliverySystem = deliverySystem,
+        caids = caids,
+        autoStartOnBoot = autoStartOnBoot
+    )
+
     // Primary active server getters for backward compatibility
     val primaryServer: OscamServerEntry
         get() = servers.firstOrNull { it.enabled && it.isPrimary }
@@ -490,13 +514,14 @@ class OscamConfigRepository(private val context: Context) {
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 val protoStr = obj.optString("protocol", "DVBAPI")
+                val parsedProto = ServerProtocol.fromString(protoStr)
                 list.add(
                     OscamServerEntry(
                         id = obj.optString("id", UUID.randomUUID().toString()),
                         name = obj.optString("name", "Server ${i + 1}"),
-                        protocol = ServerProtocol.fromString(protoStr),
+                        protocol = parsedProto,
                         host = obj.optString("host", "192.168.1.100"),
-                        port = obj.optInt("port", if (protoStr == "NEWCAMD") 10000 else if (protoStr == "CCCAM") 12000 else 9000),
+                        port = obj.optInt("port", parsedProto.defaultPort),
                         user = obj.optString("user", "android_tv"),
                         password = obj.optString("password", "android_tv"),
                         desKey = obj.optString("des_key", "0102030405060708091011121314"),

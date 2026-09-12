@@ -23,8 +23,12 @@ add_library(oscam_bridge STATIC
     bridge/BridgeLogger.cpp
     bridge/DvbapiProtocol.cpp
     bridge/DvbapiClient.cpp
+    bridge/Cs378xClient.cpp
+    bridge/RadegastClient.cpp
+    bridge/OscamWebIfClient.cpp
     bridge/NewcamdClient.cpp
     bridge/CCcamClient.cpp
+    bridge/OscamConnectionManager.cpp
     bridge/SatellitePmtParser.cpp
     bridge/SoftwareDescrambler.cpp
 )
@@ -197,6 +201,26 @@ if(NOT ANDROID)
         GTest::gtest_main
     )
 
+    # Tests Cs378x (Camd35 TCP) Client & AES-128 Crypto
+    add_executable(cs378x_tests
+        tests/Cs378xClientTest.cpp
+    )
+    target_link_libraries(cs378x_tests PRIVATE
+        oscam_bridge
+        GTest::gtest
+        GTest::gtest_main
+    )
+
+    # Tests OscamConnectionManager Multi-Protocol Orchestrator
+    add_executable(conn_manager_tests
+        tests/OscamConnectionManagerTest.cpp
+    )
+    target_link_libraries(conn_manager_tests PRIVATE
+        oscam_bridge
+        GTest::gtest
+        GTest::gtest_main
+    )
+
     enable_testing()
     include(GoogleTest)
     gtest_discover_tests(protocol_tests)
@@ -204,6 +228,8 @@ if(NOT ANDROID)
     gtest_discover_tests(hal_tests)
     gtest_discover_tests(newcamd_tests)
     gtest_discover_tests(cccam_tests)
+    gtest_discover_tests(cs378x_tests)
+    gtest_discover_tests(conn_manager_tests)
 endif()
 
 # ---------------------------------------------------------------------------

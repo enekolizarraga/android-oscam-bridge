@@ -51,6 +51,7 @@ static WinsockInit gWinsockInit;
 #  include <sys/select.h>
 #  include <sys/socket.h>
 #  include <sys/types.h>
+#  include <sys/un.h>
 #  include <unistd.h>
    using SockLen = socklen_t;
    using SocketFd = int;
@@ -80,15 +81,16 @@ DvbapiClient::~DvbapiClient() {
 // start / stop
 // ---------------------------------------------------------------------------
 
-void DvbapiClient::start() {
+bool DvbapiClient::start() {
     bool expected = false;
     if (!running_.compare_exchange_strong(expected, true)) {
         BLOG_W("DvbapiClient::start() llamado cuando ya estaba corriendo");
-        return;
+        return true;
     }
     networkThread_ = std::thread(&DvbapiClient::networkThreadMain, this);
-    BLOG_I("DvbapiClient iniciado (target: %s:%d)",
-           config_.host.c_str(), config_.port);
+    BLOG_I("DvbapiClient iniciado (target: %s:%d, unix=%s)",
+           config_.host.c_str(), config_.port, isUnixSocket() ? "true" : "false");
+    return true;
 }
 
 void DvbapiClient::stop() {
@@ -128,6 +130,30 @@ bool DvbapiClient::sendDmxStop(uint8_t adapterId, uint8_t demuxId,
     if (!running_) return false;
     enqueueBytes(DvbapiProtocol::buildDmxStop(adapterId, demuxId, filterId, pid));
     return true;
+}
+
+bool DvbapiClient::sendEcm(uint16_t serviceId, uint16_t /*caid*/, uint32_t /*providerId*/,
+                           const uint8_t* ecmData, size_t length) {
+    if (!running_) return false;
+    CaPid caPid{};
+    caPid.pid = serviceId > 0 ? serviceId : 0x0100;
+    caPid.index = 0;
+    sendCaSetPid(0, caPid);
+
+    DmxFilter filter{};
+    filter.adapterId = 0;
+    filter.demuxId = 0;
+    filter.filterId = 0;
+    filter.pid = static_cast<uint16_t>(caPid.pid);
+    if (ecmData && length > 0) {
+        filter.filter[0] = ecmData[0];
+        filter.mask[0] = 0xFF;
+    } else {
+        filter.filter[0] = 0x80;
+        filter.mask[0] = 0xFE;
+    }
+    filter.flags = 0x01; // DMX_IMMEDIATE_START
+    return sendDmxSetFilter(filter);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +215,33 @@ int DvbapiClient::connectWithBackoff() {
         if (maxA > 0 && attempts >= maxA) {
             return INVALID_SOCKET_FD;
         }
+
+#if !defined(_WIN32)
+        if (isUnixSocket()) {
+            const int ufd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+            if (ufd < 0) {
+                BLOG_E("socket(AF_UNIX) falló: error %d", SOCK_ERRNO);
+                ++attempts;
+                std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+                backoffMs = std::min(backoffMs * 2, config_.maxBackoffMs);
+                continue;
+            }
+            setSocketTimeouts(ufd, config_.connectTimeoutSec);
+            struct sockaddr_un sunAddr{};
+            sunAddr.sun_family = AF_UNIX;
+            std::strncpy(sunAddr.sun_path, config_.host.c_str(), sizeof(sunAddr.sun_path) - 1);
+            if (::connect(ufd, reinterpret_cast<struct sockaddr*>(&sunAddr), sizeof(sunAddr)) == 0) {
+                BLOG_I("Conectado a OSCam DVBAPI UNIX socket: %s (intento %d)", config_.host.c_str(), attempts + 1);
+                return ufd;
+            }
+            BLOG_W("connect(UNIX: %s) falló (intento %d): error %d", config_.host.c_str(), attempts + 1, SOCK_ERRNO);
+            CLOSE_SOCKET(ufd);
+            ++attempts;
+            std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+            backoffMs = std::min(backoffMs * 2, config_.maxBackoffMs);
+            continue;
+        }
+#endif
 
         const int fd = createSocket();
         if (fd == INVALID_SOCKET_FD) {

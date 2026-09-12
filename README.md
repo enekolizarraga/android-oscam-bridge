@@ -1,14 +1,17 @@
-# Android TV ↔ OSCam CAS Bridge
+# Android TV ↔ OSCam CAS Bridge (``)
 
 [![C++20](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![Android TV](https://img.shields.io/badge/Android%20TV-API%2030--34%20(Android%2011--14)-green.svg)](https://developer.android.com/tv)
+[![Package](https://img.shields.io/badge/Package--blueviolet.svg)](java/AndroidManifest.xml)
 [![SoC](https://img.shields.io/badge/SoC-Amlogic%20%7C%20MediaTek%20%7C%20Realtek%20%7C%20Broadcom%20%7C%20Synaptics%20%7C%20Novatek-purple.svg)](#supported-hardware-soc-matrix)
 [![Delivery](https://img.shields.io/badge/Delivery-DVB--S%2FS2%2FS2X%20(Default)%20%7C%20DVB--T2%20%7C%20DVB--C-orange.svg)](#broadcast-delivery-systems)
-[![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey.svg)](LICENSE)
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0%20(Non--Commercial)-red.svg)](LICENSE.md)
 
-An enterprise-grade, high-performance **Android TV Conditional Access System (CAS)** HAL service and companion bridge that seamlessly connects the native Android Tuner and MediaCas framework to an **OSCam** card server via the network `dvbapi` protocol.
+An enterprise-grade, high-performance **Android TV Conditional Access System (CAS)** HAL service and companion bridge that seamlessly connects the native Android Tuner and MediaCas framework to an **OSCam** card server through a professional multi-protocol suite: **DVBAPI (TCP / UNIX Domain Socket)**, **Camd35 / Cs378x (TCP Native)**, **Radegast v3**, **Newcamd v5.25**, **CCcam v2.3.0**, and **OSCam WebIF REST API**.
 
-Designed for personal domestic research, home lab environments, and legal interoperability, this bridge allows owners of legitimate smartcard subscriptions housed in a domestic OSCam receiver to descramble and watch authorized satellite (**DVB-S / DVB-S2 / DVB-S2X**), terrestrial (**DVB-T / DVB-T2**), and cable (**DVB-C**) broadcast channels directly on rooted Android TV devices using the television's official native apps.
+**Author**: lizarragaeus  
+**Package ID**: ``  
+**License**: Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0). Strictly prohibited for sale or commercial distribution; attribution is mandatory.
 
 ---
 
@@ -114,19 +117,57 @@ This project implements a vendor AIDL CAS plugin (`vendor.oscam.cas.IOscamCasSer
 
 ---
 
-## Multi-Protocol Engine (OSCam DVBAPI, Newcamd v5.25 & CCcam)
+## Multi-Protocol Engine (Comprehensive OSCam Compatibility Suite)
 
-The bridge features a flexible, multi-reader network layer allowing your Android TV to connect to different domestic cardservers:
+The bridge features a professional, industrial-grade multi-protocol connection layer managed by `OscamConnectionManager`:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       ANDROID TV CAS BRIDGE ENGINE                          │
-│                                                                             │
-│  [Server 1: Local OSCam]  ──► DVBAPI Protocol (TCP:9000) ──► Movistar+ 0x1810│
-│  [Server 2: HD+ Reader]   ──► Newcamd v5.25   (TCP:10001)──► HD+ Astra 0x1830│
-│  [Server 3: CCcam Server] ──► CCcam v2.3.0    (TCP:12000)──► Tivùsat   0x183E│
-└─────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                        ANDROID TV CAS BRIDGE ENGINE ()                     │
+│                                                                                                        │
+│  [Method 1: DVBAPI TCP]     ──► Native OSCam DVBAPI (TCP:9000)        ──► High-speed network socket    │
+│  [Method 2: DVBAPI UNIX]    ──► Local Domain Socket (/tmp/camd.socket)──► Zero-network local overhead  │
+│  [Method 3: Cs378x Camd35]  ──► OSCam Native Binary (TCP:13000 AES-128)─► Encrypted peer-to-peer       │
+│  [Method 4: Radegast v3]    ──► Low-Latency TLV (TCP:678)             ──► Ultra-fast local CW requests │
+│  [Method 5: Newcamd v5.25]  ──► 3DES EDE2 Crypto (TCP:10000)          ──► Multi-CAID cardserver        │
+│  [Method 6: CCcam v2.3.0]   ──► RC4 / SHA-1 Stream Cipher (TCP:12000) ──► Node-ID domestic sharing     │
+│  [Method 7: OSCam WebIF]    ──► HTTP REST/XML API (HTTP:8888)         ──► Diagnostics, ECM & Restarts  │
+│                                                                                                        │
+│  AUTOMATIC FAILOVER ORCHESTRATOR: If primary fails, hot-switches to backup server in < 500 ms          │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Supported OSCam Connection Methods
+
+1. **DVBAPI (TCP Socket)**:
+   - Connects directly to OSCam's `[dvbapi]` TCP listener (`listen_port = 9000`).
+   - Standard opcodes: `DVBAPI_CLIENT_INFO`, `DVBAPI_SERVER_INFO`, `DVBAPI_CA_SET_PID`, `DVBAPI_DMX_SET_FILTER`, `DVBAPI_CA_SET_DESCR`.
+
+2. **DVBAPI (UNIX Domain Socket)**:
+   - Connects to `/tmp/camd.socket` or `/data/vendor/oscam/camd.socket` via `AF_UNIX`.
+   - Bypasses TCP network overhead and open ports on local Android TV and Linux STBs.
+
+3. **Camd35 / Cs378x (TCP Native)**:
+   - OSCam's native cardserver protocol over TCP (`port = 13000`).
+   - Self-contained AES-128 CBC encryption with MD5(`password`) key derivation.
+   - Robust keepalive and binary frame parsing with zero OpenSSL dependency.
+
+4. **Radegast v3 (TCP Port 678)**:
+   - Lightweight, ultra-low latency TLV (Type-Length-Value) protocol supported by OSCam `[radegast]`.
+   - Zero cryptographic overhead for instant Control Word resolution on home LANs.
+
+5. **Newcamd v5.25 (TCP)**:
+   - Standard card sharing protocol with self-contained 3DES EDE2 encryption and 14-byte DES keys.
+   - Automated keepalive loop (`MSG_KEEPALIVE`) and provider multi-mapping.
+
+6. **CCcam v2.3.0 (TCP)**:
+   - Self-contained RC4 stream cipher and SHA-1 cryptographic engine.
+   - Automated 16-byte node-ID handshake and keepalive ping loop.
+
+7. **OSCam WebIF HTTP/REST Management API**:
+   - Direct integration with OSCam's WebIF interface (`http://host:8888`).
+   - Authenticated diagnostic endpoints (`/api.html?part=status`, `/status.xml`, `/ecm.info`).
+   - Live health checks, reader response time monitoring (ms), and remote cardreader restart capability.
 
 ### Pre-Configured Provider Templates
 
@@ -466,3 +507,16 @@ This software is developed and distributed strictly for **personal research, aca
 - This project does **not** include smartcard keys, commercial decryption keys, or subscription access codes.
 - The developers do not condone, promote, or support commercial piracy, unauthorized redistribution of broadcast streams, or cardsharing outside of legal domestic use.
 - Users are solely responsible for ensuring compliance with local laws and their broadcast service agreement terms.
+
+---
+
+## License & Mandatory Attribution
+
+This project is licensed under the **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International Public License (CC BY-NC-SA 4.0)**.
+
+See the full legal text in [**`LICENSE.md`**](LICENSE.md).
+
+### Core License Conditions:
+1. **STRICTLY NON-COMMERCIAL (FORBIDDEN TO SELL)**: You may not use this code, compiled binaries, or derivative works for commercial purposes or financial gain. Selling, renting, charging for access, or monetizing this project in any way is strictly forbidden.
+2. **MANDATORY ATTRIBUTION (CREDITS REQUIRED)**: Any distribution, fork, or modification must retain and prominently display full author credits to **`lizarragaeus`** and the original project repository **`android-oscam-bridge` (``)**.
+3. **SHARE-ALIKE**: If you remix, transform, or build upon the material, you must distribute your contributions under the exact same non-commercial license (CC BY-NC-SA 4.0).

@@ -35,19 +35,22 @@
 #include <thread>
 #include <vector>
 
+#include "IOscamClient.h"
+
 namespace oscam::dvbapi {
 
 /**
  * @brief Parámetros de conexión al servidor OSCam dvbapi.
  */
 struct ConnectionConfig {
-    std::string host;           ///< IP o hostname del servidor OSCam
+    std::string host;           ///< IP/hostname o ruta de socket UNIX (/tmp/camd.socket)
     uint16_t    port{9000};     ///< Puerto dvbapi de OSCam (por defecto 9000)
     int         connectTimeoutSec{5};   ///< Timeout de connect()
     int         recvTimeoutSec{10};     ///< Timeout de recv() por lectura
     int         maxReconnectAttempts{10}; ///< 0 = reintentos infinitos
     int         initialBackoffMs{500};  ///< Backoff inicial (se dobla en cada reintento)
     int         maxBackoffMs{60000};    ///< Cap del backoff
+    bool        isUnixSocket{false};    ///< Forzar uso de socket UNIX
 };
 
 /**
@@ -70,30 +73,9 @@ struct DvbapiCallbacks {
 };
 
 /**
- * @brief Cliente TCP para el protocolo dvbapi de OSCam.
- *
- * ### Ejemplo de uso
- * ```cpp
- * oscam::dvbapi::ConnectionConfig cfg;
- * cfg.host = "192.168.1.100";
- * cfg.port = 9000;
- *
- * oscam::dvbapi::DvbapiCallbacks cbs;
- * cbs.OnCaSetDescr = [](const oscam::dvbapi::CaDescr& d) {
- *     // inyectar d.cw en el hardware descrambler
- * };
- *
- * oscam::dvbapi::DvbapiClient client(cfg, cbs);
- * client.start();
- *
- * // Enviar CA_SET_PID para el PID 0x0100, slot 0
- * client.sendCaSetPid(0, {0x0100, 0});
- *
- * // ... procesar ECMs ...
- * client.stop();
- * ```
+ * @brief Cliente TCP y UNIX Domain Socket para el protocolo dvbapi de OSCam.
  */
-class DvbapiClient {
+class DvbapiClient : public IOscamClient {
 public:
     explicit DvbapiClient(ConnectionConfig config, DvbapiCallbacks callbacks);
 
@@ -106,47 +88,43 @@ public:
     /**
      * @brief Destructor: llama a stop() si el hilo sigue corriendo.
      */
-    ~DvbapiClient();
+    ~DvbapiClient() override;
 
     /**
      * @brief Arranca el hilo de red y envía el CLIENT_INFO inicial.
-     *
-     * No bloquea; la conexión se establece en background.
-     * Puede llamarse solo una vez; si ya fue llamado, no hace nada.
+     * @return true si se arrancó correctamente.
      */
-    void start();
+    bool start() override;
 
     /**
      * @brief Detiene el hilo de red limpiamente y cierra el socket.
-     *
-     * Bloquea hasta que el hilo termina (máx. 2 s de gracia).
      */
-    void stop();
-
-    /**
-     * @brief Encola un mensaje CA_SET_PID para enviarlo al servidor.
-     *
-     * @param adapterId  Índice del adaptador DVB (usualmente 0).
-     * @param pid        PID del servicio/ECM y slot CA.
-     * @return true si se encoló correctamente, false si el cliente está parado.
-     */
-    bool sendCaSetPid(uint8_t adapterId, const CaPid& pid);
-
-    /**
-     * @brief Encola un mensaje DMX_SET_FILTER.
-     */
-    bool sendDmxSetFilter(const DmxFilter& filter);
-
-    /**
-     * @brief Encola un mensaje DMX_STOP.
-     */
-    bool sendDmxStop(uint8_t adapterId, uint8_t demuxId,
-                     uint8_t filterId, uint16_t pid);
+    void stop() override;
 
     /**
      * @brief Indica si el cliente tiene una conexión activa en este momento.
      */
-    bool isConnected() const noexcept;
+    bool isConnected() const noexcept override;
+
+    /**
+     * @brief Implementación de IOscamClient::sendEcm.
+     */
+    bool sendEcm(uint16_t serviceId, uint16_t caid, uint32_t providerId,
+                 const uint8_t* ecmData, size_t length) override;
+
+    ProtocolType getProtocolType() const override {
+        return isUnixSocket() ? ProtocolType::DVBAPI_UNIX : ProtocolType::DVBAPI_TCP;
+    }
+
+    std::string getProtocolName() const override {
+        return isUnixSocket() ? "OSCam DVBAPI (UNIX Domain Socket)" : "OSCam DVBAPI (TCP Socket)";
+    }
+
+    bool isUnixSocket() const noexcept {
+        return config_.isUnixSocket ||
+               (config_.host.rfind("/", 0) == 0) ||
+               (config_.host.find(".socket") != std::string::npos);
+    }
 
 private:
     // -----------------------------------------------------------------------

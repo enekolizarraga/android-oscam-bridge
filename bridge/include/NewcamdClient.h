@@ -24,6 +24,8 @@
 #include <thread>
 #include <vector>
 
+#include "IOscamClient.h"
+
 namespace oscam::newcamd {
 
 /**
@@ -65,10 +67,10 @@ struct NewcamdCallbacks {
 /**
  * @brief Production-grade Newcamd v5.25 TCP client.
  */
-class NewcamdClient {
+class NewcamdClient : public IOscamClient {
 public:
     explicit NewcamdClient(NewcamdConfig config, NewcamdCallbacks callbacks);
-    ~NewcamdClient();
+    ~NewcamdClient() override;
 
     // Disable copy / move
     NewcamdClient(const NewcamdClient&) = delete;
@@ -77,16 +79,19 @@ public:
     NewcamdClient& operator=(NewcamdClient&&) = delete;
 
     /// Starts the background network thread and establishes connection.
-    bool start();
+    bool start() override;
 
     /// Stops network thread and gracefully disconnects.
-    void stop();
+    void stop() override;
 
     /// Dispatches an ECM packet to the Newcamd server.
-    bool sendEcm(uint16_t serviceId, uint16_t caid, uint32_t providerId, const uint8_t* ecmData, size_t length);
+    bool sendEcm(uint16_t serviceId, uint16_t caid, uint32_t providerId, const uint8_t* ecmData, size_t length) override;
 
     /// Checks if currently connected and authenticated.
-    bool isConnected() const;
+    bool isConnected() const override;
+
+    ProtocolType getProtocolType() const override { return ProtocolType::NEWCAMD; }
+    std::string getProtocolName() const override { return "Newcamd v5.25 (TCP)"; }
 
     /// Static diagnostic helper: tests connection and login without launching long-lived threads.
     static bool testConnection(

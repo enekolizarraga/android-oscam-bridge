@@ -52,6 +52,24 @@ struct SatelliteProgramInfo {
     std::vector<ElementaryStream> streams;          ///< Streams elementales (Video, Audios, etc.)
 
     /**
+     * @brief Verifica si el canal satelital está codificado/cifrado (scrambled).
+     * Un canal es FTA (Free-To-Air / en abierto) si no tiene descriptores CA ni a nivel
+     * de programa ni a nivel de ninguno de sus streams elementales.
+     * En caso de ser FTA, el bridge y el descrambler se omiten por completo.
+     */
+    bool isScrambled() const {
+        if (!programCaDescriptors.empty()) {
+            return true;
+        }
+        for (const auto& stream : streams) {
+            if (!stream.caDescriptors.empty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * @brief Busca el ECM PID para un CAID dado, verificando primero los descriptores
      * a nivel de programa y luego a nivel de stream.
      */

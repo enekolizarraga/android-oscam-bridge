@@ -1,13 +1,14 @@
-package com.oscam.cas
+package 
 
 import android.util.Log
 
 /**
  * JNI wrapper for communicating with the native C++ library (liboscam_jni.so).
- * Manages multi-protocol client lifecycle, asynchronous event dispatching, and software descrambling.
+ * Supports multi-protocol connections (DVBAPI TCP/UNIX, Cs378x, Radegast, Newcamd, CCcam, WebIF).
  *
- * Log Tag: OscamCasBridge
- * Package alias for backward compatibility with 
+ * Package: 
+ * Author: Eneko Lizarraga
+ * License: CC BY-NC-SA 4.0
  */
 object OscamNativeBridge {
     private const val TAG = "OscamCasBridge"
@@ -15,7 +16,7 @@ object OscamNativeBridge {
     init {
         try {
             System.loadLibrary("oscam_jni")
-            Log.i(TAG, "Native library liboscam_jni.so loaded successfully")
+            Log.i(TAG, "Native library liboscam_jni.so loaded successfully in ")
         } catch (e: UnsatisfiedLinkError) {
             Log.e(TAG, "ERROR: Could not load liboscam_jni.so: ${e.message}", e)
         }
@@ -108,3 +109,4 @@ object OscamNativeBridge {
         }
     }
 }
+

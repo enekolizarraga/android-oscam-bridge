@@ -23,6 +23,8 @@
 #include <thread>
 #include <vector>
 
+#include "IOscamClient.h"
+
 namespace oscam::cccam {
 
 /**
@@ -69,10 +71,10 @@ struct Rc4Key {
 /**
  * @brief Production-grade CCcam v2.3.0 TCP client.
  */
-class CCcamClient {
+class CCcamClient : public IOscamClient {
 public:
     explicit CCcamClient(CCcamConfig config, CCcamCallbacks callbacks);
-    ~CCcamClient();
+    ~CCcamClient() override;
 
     // Disable copy / move
     CCcamClient(const CCcamClient&) = delete;
@@ -81,16 +83,19 @@ public:
     CCcamClient& operator=(CCcamClient&&) = delete;
 
     /// Starts the background network thread and establishes connection.
-    bool start();
+    bool start() override;
 
     /// Stops network thread and gracefully disconnects.
-    void stop();
+    void stop() override;
 
     /// Dispatches an ECM packet to the CCcam server.
-    bool sendEcm(uint16_t serviceId, uint16_t caid, uint32_t providerId, const uint8_t* ecmData, size_t length);
+    bool sendEcm(uint16_t serviceId, uint16_t caid, uint32_t providerId, const uint8_t* ecmData, size_t length) override;
 
     /// Checks if currently connected and authenticated.
-    bool isConnected() const;
+    bool isConnected() const override;
+
+    ProtocolType getProtocolType() const override { return ProtocolType::CCCAM; }
+    std::string getProtocolName() const override { return "CCcam v2.3.0 (TCP)"; }
 
     /// Static diagnostic helper: tests connection and login without launching long-lived threads.
     static bool testConnection(

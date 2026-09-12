@@ -180,10 +180,19 @@ class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         serviceScope.launch {
             try {
                 val config = repository.getCurrentConfig()
-                Log.i(TAG, "Starting dvbapi bridge -> ${config.serverHost}:${config.serverPort} [${config.deliverySystem}]")
+                val primary = config.primaryServer
+                Log.i(TAG, "Starting OSCam bridge -> ${primary.host}:${primary.port} [Proto: ${primary.protocol.displayName}, Sys: ${config.deliverySystem}]")
 
                 val caidIntArray = config.caids.toIntArray()
-                val initOk = OscamNativeBridge.nativeInit(config.serverHost, config.serverPort, caidIntArray)
+                val initOk = OscamNativeBridge.nativeInitEx(
+                    primary.host,
+                    primary.port,
+                    primary.protocol.id,
+                    primary.user,
+                    primary.password,
+                    primary.desKey,
+                    caidIntArray
+                )
 
                 if (!initOk) {
                     val err = OscamNativeBridge.nativeGetLastError().ifEmpty { "Native initialization failed" }
@@ -194,11 +203,11 @@ class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
                 }
 
                 _connectionState.value = OscamNativeBridge.State.CONNECTING
-                updateNotification("Connecting to ${config.serverHost}:${config.serverPort} (http://$localIp:8080)")
+                updateNotification("Connecting [${primary.protocol.displayName}] to ${primary.host}:${primary.port} (http://$localIp:8080)")
 
                 val startOk = OscamNativeBridge.nativeStart()
                 if (!startOk) {
-                    val err = OscamNativeBridge.nativeGetLastError().ifEmpty { "Failed to start dvbapi client" }
+                    val err = OscamNativeBridge.nativeGetLastError().ifEmpty { "Failed to start OSCam client" }
                     _lastError.value = err
                     _connectionState.value = OscamNativeBridge.State.ERROR
                     updateNotification("Start failed: $err")
@@ -253,6 +262,45 @@ class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
                 false
             }
         }
+    }
+
+    suspend fun testConnectionEx(
+        host: String,
+        port: Int,
+        protocol: Int = ServerProtocol.DVBAPI.id,
+        user: String = "android_tv",
+        password: String = "android_tv",
+        desKey: String = "0102030405060708091011121314",
+        timeoutMs: Int = 3000
+    ): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                OscamNativeBridge.nativeTestConnectionEx(host, port, protocol, user, password, desKey, timeoutMs)
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception in testConnectionEx: ${e.message}", e)
+                "Error: ${e.message}"
+            }
+        }
+    }
+
+    suspend fun queryWebIfStatus(host: String, port: Int, user: String, pass: String): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                OscamNativeBridge.nativeQueryWebIfStatus(host, port, user, pass)
+            } catch (e: Exception) {
+                "WebIF Error: ${e.message}"
+            }
+        }
+    }
+
+    fun failoverNext(): Boolean {
+        val ok = OscamNativeBridge.nativeFailoverNext()
+        if (ok) {
+            val desc = OscamNativeBridge.nativeGetActiveServerDescription()
+            Log.i(TAG, "Failover activated: $desc")
+            updateNotification("Active: $desc")
+        }
+        return ok
     }
 
     override fun onConnectionStateChanged(state: Int) {
@@ -314,7 +362,16 @@ class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
                 delay(backoffMs)
 
                 val config = repository.getCurrentConfig()
-                OscamNativeBridge.nativeInit(config.serverHost, config.serverPort, config.caids.toIntArray())
+                val primary = config.primaryServer
+                OscamNativeBridge.nativeInitEx(
+                    primary.host,
+                    primary.port,
+                    primary.protocol.id,
+                    primary.user,
+                    primary.password,
+                    primary.desKey,
+                    config.caids.toIntArray()
+                )
                 val started = OscamNativeBridge.nativeStart()
 
                 if (started) {

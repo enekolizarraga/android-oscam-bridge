@@ -12,14 +12,18 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import android.os.Environment
+import android.os.StatFs
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.*
@@ -83,6 +87,10 @@ class OscamLocalConfigWebServer(
                 // Telemetry & Status
                 createContext("/api/status", ApiStatusHandler())
                 createContext("/api/hardware", ApiHardwareHandler())
+                createContext("/api/tv_info", ApiTvInfoHandler())
+                createContext("/api/tuner_status", ApiTunerStatusHandler())
+                createContext("/api/tuner/toggle_cable", ApiToggleCableHandler())
+                createContext("/api/providers", ApiProvidersHandler())
 
                 // Configuration Management
                 createContext("/api/config", ApiGetConfigHandler())
@@ -141,8 +149,9 @@ class OscamLocalConfigWebServer(
                     val stats = OscamNativeBridge.getStats()
                     val status = OscamNativeBridge.getCurrentStatus()
                     val hw = repository.getHardwareInfo()
+                    val tuner = SatelliteTunerMonitor.getTelemetry(context)
 
-                    val html = buildDashboardHtml(config, stats, status, hw)
+                    val html = buildDashboardHtml(config, stats, status, hw, tuner)
                     val responseBytes = html.toByteArray(Charsets.UTF_8)
 
                     exchange.responseHeaders.set("Content-Type", "text/html; charset=UTF-8")
@@ -225,6 +234,230 @@ class OscamLocalConfigWebServer(
                     sendJsonResponse(exchange, 200, json.toString())
                 } catch (e: Exception) {
                     sendErrorResponse(exchange, 500, e.message ?: "Hardware query error")
+                }
+            }
+        }
+    }
+
+    private inner class ApiTvInfoHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val hw = repository.getHardwareInfo()
+                    val tuner = SatelliteTunerMonitor.getTelemetry(context)
+                    val tvBrand = TclTvCompat.detectTvBrand()
+                    val tclDetails = TclTvCompat.getTclModelDetails()
+
+                    // Storage calculations
+                    val dataDir = Environment.getDataDirectory()
+                    val stat = StatFs(dataDir.path)
+                    val totalStorageGb = String.format(Locale.US, "%.1f", (stat.blockCountLong * stat.blockSizeLong) / (1024.0 * 1024 * 1024))
+                    val freeStorageGb = String.format(Locale.US, "%.1f", (stat.availableBlocksLong * stat.blockSizeLong) / (1024.0 * 1024 * 1024))
+
+                    // Display metrics
+                    val dm = context.resources.displayMetrics
+                    val displayRes = "${dm.widthPixels}x${dm.heightPixels}"
+
+                    // Network interface info
+                    var activeIp = "127.0.0.1"
+                    var activeMac = "00:00:00:00:00:00"
+                    var ifaceName = "loopback"
+                    try {
+                        val interfaces = NetworkInterface.getNetworkInterfaces()
+                        while (interfaces != null && interfaces.hasMoreElements()) {
+                            val iface = interfaces.nextElement()
+                            if (iface.isUp && !iface.isLoopback) {
+                                val addrs = iface.inetAddresses
+                                while (addrs.hasMoreElements()) {
+                                    val addr = addrs.nextElement()
+                                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                                        activeIp = addr.hostAddress ?: ""
+                                        ifaceName = iface.name
+                                        val macBytes = iface.hardwareAddress
+                                        if (macBytes != null) {
+                                            activeMac = macBytes.joinToString(":") { "%02X".format(it) }
+                                        }
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Network enum error: ${e.message}")
+                    }
+
+                    val json = JSONObject().apply {
+                        put("success", true)
+                        put("tv_brand", tvBrand.name)
+                        put("model", hw.model)
+                        put("manufacturer", hw.manufacturer)
+                        put("board", hw.board)
+                        put("hardware", hw.hardware)
+                        put("soc_platform", hw.socPlatform)
+                        put("detected_chipset", hw.detectedChipset)
+                        put("android_version", hw.androidVersion)
+                        put("sdk_int", hw.sdkInt)
+                        put("tcl_model_details", tclDetails)
+                        put("web_console_port", port)
+
+                        put("display", JSONObject().apply {
+                            put("resolution", displayRes)
+                            put("density_dpi", dm.densityDpi)
+                            put("hdr_support", "HDR10, HDR10+, Dolby Vision, HLG")
+                        })
+
+                        put("memory", JSONObject().apply {
+                            put("total_mb", hw.totalMemoryMb)
+                            put("available_mb", hw.availableMemoryMb)
+                            put("used_mb", hw.totalMemoryMb - hw.availableMemoryMb)
+                        })
+
+                        put("storage", JSONObject().apply {
+                            put("total_gb", totalStorageGb)
+                            put("free_gb", freeStorageGb)
+                        })
+
+                        put("network", JSONObject().apply {
+                            put("ip", activeIp)
+                            put("mac", activeMac)
+                            put("interface", ifaceName)
+                        })
+
+                        put("satellite_tuner", JSONObject().apply {
+                            put("cable_connected", tuner.cableConnected)
+                            put("carrier_locked", tuner.carrierLocked)
+                            put("signal_strength_percent", tuner.signalStrengthPercent)
+                            put("snr_db", tuner.snrDb)
+                            put("ber", tuner.ber)
+                            put("lnb_voltage", tuner.lnbVoltage)
+                            put("tone_22khz", tuner.tone22kHz)
+                            put("active_satellite", tuner.activeSatellite)
+                            put("frequency_mhz", tuner.frequencyMhz)
+                            put("polarization", tuner.polarization)
+                            put("symbol_rate_ks", tuner.symbolRateKs)
+                            put("delivery_system", tuner.deliverySystem)
+                            put("frontend_device_node", tuner.frontendDeviceNode)
+                            put("hardware_detected", tuner.hardwareDetected)
+                            put("status_message", tuner.statusMessage)
+                        })
+
+                        val oemAppsArray = JSONArray()
+                        TclTvCompat.inspectInstalledOemApps(context).forEach { app ->
+                            oemAppsArray.put(JSONObject().apply {
+                                put("pkg", app.packageName)
+                                put("name", app.appName)
+                                put("brand", app.brand.name)
+                                put("installed", app.isInstalled)
+                            })
+                        }
+                        put("oem_tv_apps", oemAppsArray)
+
+                        val tclNodesObj = JSONObject()
+                        TclTvCompat.checkTclHardwareNodes().forEach { (k, v) ->
+                            tclNodesObj.put(k, v)
+                        }
+                        put("tcl_hardware_nodes", tclNodesObj)
+
+                        val providersArray = JSONArray()
+                        ProviderPreset.getAllPresets().forEach { p ->
+                            providersArray.put(JSONObject().apply {
+                                put("id", p.id)
+                                put("name", p.name)
+                                put("country", p.country)
+                                put("satellite", p.satellite)
+                                put("default_port", p.defaultPort)
+                                put("description", p.description)
+                                put("caids", p.caids.joinToString(", ") { "0x%04X".format(it) })
+                            })
+                        }
+                        put("available_providers", providersArray)
+                    }
+
+                    sendJsonResponse(exchange, 200, json.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "TV info error")
+                }
+            }
+        }
+    }
+
+    private inner class ApiTunerStatusHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val tuner = SatelliteTunerMonitor.getTelemetry(context)
+                    val json = JSONObject().apply {
+                        put("success", true)
+                        put("cable_connected", tuner.cableConnected)
+                        put("carrier_locked", tuner.carrierLocked)
+                        put("signal_strength_percent", tuner.signalStrengthPercent)
+                        put("snr_db", tuner.snrDb)
+                        put("ber", tuner.ber)
+                        put("lnb_voltage", tuner.lnbVoltage)
+                        put("tone_22khz", tuner.tone22kHz)
+                        put("active_satellite", tuner.activeSatellite)
+                        put("frequency_mhz", tuner.frequencyMhz)
+                        put("polarization", tuner.polarization)
+                        put("symbol_rate_ks", tuner.symbolRateKs)
+                        put("delivery_system", tuner.deliverySystem)
+                        put("frontend_device_node", tuner.frontendDeviceNode)
+                        put("hardware_detected", tuner.hardwareDetected)
+                        put("status_message", tuner.statusMessage)
+                    }
+                    sendJsonResponse(exchange, 200, json.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "Tuner status error")
+                }
+            }
+        }
+    }
+
+    private inner class ApiToggleCableHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val newState = SatelliteTunerMonitor.toggleCableSimulation()
+                    appendLog("Satellite cable simulation state toggled: " + if (newState) "CONNECTED (13V LNB active)" else "DISCONNECTED (No RF signal)")
+                    val tuner = SatelliteTunerMonitor.getTelemetry(context)
+                    val json = JSONObject().apply {
+                        put("success", true)
+                        put("cable_connected", tuner.cableConnected)
+                        put("carrier_locked", tuner.carrierLocked)
+                        put("signal_strength_percent", tuner.signalStrengthPercent)
+                        put("snr_db", tuner.snrDb)
+                        put("status_message", tuner.statusMessage)
+                    }
+                    sendJsonResponse(exchange, 200, json.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "Toggle error")
+                }
+            }
+        }
+    }
+
+    private inner class ApiProvidersHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val array = JSONArray()
+                    ProviderPreset.getAllPresets().forEach { p ->
+                        array.put(JSONObject().apply {
+                            put("id", p.id)
+                            put("name", p.name)
+                            put("country", p.country)
+                            put("satellite", p.satellite)
+                            put("default_port", p.defaultPort)
+                            put("description", p.description)
+                            put("caids", p.caids.joinToString(", ") { "0x%04X".format(it) })
+                        })
+                    }
+                    val json = JSONObject().apply {
+                        put("success", true)
+                        put("providers", array)
+                    }
+                    sendJsonResponse(exchange, 200, json.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, "Providers error: ${e.message}")
                 }
             }
         }
@@ -354,13 +587,14 @@ class OscamLocalConfigWebServer(
                         for (i in 0 until serversJsonArray.length()) {
                             val sObj = serversJsonArray.getJSONObject(i)
                             val protoStr = sObj.optString("protocol", "DVBAPI")
+                            val parsedProto = ServerProtocol.fromString(protoStr)
                             serversList.add(
                                 OscamServerEntry(
                                     id = sObj.optString("id", UUID.randomUUID().toString()),
                                     name = sObj.optString("name", "Server ${i + 1}"),
-                                    protocol = ServerProtocol.fromString(protoStr),
+                                    protocol = parsedProto,
                                     host = sObj.optString("host", "192.168.1.100").trim(),
-                                    port = sObj.optInt("port", if (protoStr == "NEWCAMD") 10000 else if (protoStr == "CCCAM") 12000 else 9000),
+                                    port = sObj.optInt("port", parsedProto.defaultPort),
                                     user = sObj.optString("user", "android_tv").trim(),
                                     password = sObj.optString("password", "android_tv").trim(),
                                     desKey = sObj.optString("des_key", "0102030405060708091011121314").trim(),
@@ -765,12 +999,13 @@ class OscamLocalConfigWebServer(
                         for (i in 0 until sArr.length()) {
                             val sObj = sArr.getJSONObject(i)
                             val protoStr = sObj.optString("protocol", "DVBAPI")
+                            val parsedProto = ServerProtocol.fromString(protoStr)
                             serversList.add(
                                 OscamServerEntry(
                                     name = sObj.optString("name", "Server ${i + 1}"),
-                                    protocol = ServerProtocol.fromString(protoStr),
+                                    protocol = parsedProto,
                                     host = sObj.optString("host", "192.168.1.100").trim(),
-                                    port = sObj.optInt("port", if (protoStr == "NEWCAMD") 10000 else if (protoStr == "CCCAM") 12000 else 9000),
+                                    port = sObj.optInt("port", parsedProto.defaultPort),
                                     user = sObj.optString("user", "android_tv").trim(),
                                     password = sObj.optString("password", "android_tv").trim(),
                                     desKey = sObj.optString("des_key", "0102030405060708091011121314").trim(),
@@ -966,7 +1201,8 @@ class OscamLocalConfigWebServer(
         config: OscamConfig,
         stats: OscamNativeBridge.BridgeStats,
         status: OscamNativeBridge.State,
-        hw: DeviceHardwareInfo
+        hw: DeviceHardwareInfo,
+        tuner: SatelliteTunerMonitor.TunerSignalTelemetry
     ): String {
         return """
 <!DOCTYPE html>
@@ -1289,10 +1525,17 @@ class OscamLocalConfigWebServer(
                 <div class="brand-icon">Ω</div>
                 <div class="brand-title">
                     <h1>Android TV CAS Bridge Master Console</h1>
-                    <p>OSCam (dvbapi) &amp; Newcamd Multi-Server Universal Tuner HAL</p>
+                    <p>CCcam 2.3.0, OSCam (dvbapi) &amp; Newcamd Universal Tuner HAL</p>
                 </div>
             </div>
             <div class="header-actions">
+                <span class="status-badge" style="background:rgba(59,130,246,0.1); border-color:#3B82F6; color:#93C5FD;">
+                    <span>📺 ${TclTvCompat.detectTvBrand()} TV (${hw.model})</span>
+                </span>
+                <span id="header-cable-badge" class="status-badge" style="background:${if (tuner.cableConnected) "rgba(16,185,129,0.15); border-color:#10B981; color:#10B981;" else "rgba(239,68,68,0.15); border-color:#EF4444; color:#EF4444;"}">
+                    <span id="header-cable-dot" class="status-dot" style="background:${if (tuner.cableConnected) "#10B981" else "#EF4444"}; box-shadow:0 0 10px ${if (tuner.cableConnected) "#10B981" else "#EF4444"};"></span>
+                    <span id="header-cable-text">${if (tuner.cableConnected) "Satellite Cable: CONNECTED" else "Satellite Cable: DISCONNECTED"}</span>
+                </span>
                 <button type="button" class="btn btn-outline" onclick="testAllServers()" title="Ping all configured servers">⚡ Ping All</button>
                 <div class="status-badge" id="pill-badge">
                     <span class="status-dot" id="pill-dot"></span>
@@ -1314,7 +1557,7 @@ class OscamLocalConfigWebServer(
             <div class="metric-tile">
                 <div class="metric-tag">Processed ECM Packets</div>
                 <div class="metric-value" id="val-ecms">${stats.ecmSentCount}</div>
-                <div class="metric-sub">Dual DVBAPI / Newcamd Flow</div>
+                <div class="metric-sub">CCcam / DVBAPI / Newcamd Flow</div>
             </div>
             <div class="metric-tile">
                 <div class="metric-tag">Average CW Latency</div>
@@ -1331,12 +1574,12 @@ class OscamLocalConfigWebServer(
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
             <button class="tab-btn active" onclick="showTab('tab-dashboard', this)">📊 Dashboard &amp; Telemetry</button>
-            <button class="tab-btn" onclick="showTab('tab-servers', this)">📡 Servers &amp; Providers (OSCam / Newcamd)</button>
+            <button class="tab-btn" onclick="showTab('tab-servers', this)">📡 Servers &amp; Providers (CCcam / OSCam / Newcamd)</button>
             <button class="tab-btn" onclick="showTab('tab-channels', this)">🛰️ Channels &amp; Transponders</button>
             <button class="tab-btn" onclick="showTab('tab-tuner', this)">⚙️ Tuner &amp; CAID Presets</button>
             <button class="tab-btn" onclick="showTab('tab-player', this)">📺 Stream Proxy &amp; Player</button>
             <button class="tab-btn" onclick="showTab('tab-diagnostics', this)">🔬 ECM Diagnostic Lab</button>
-            <button class="tab-btn" onclick="showTab('tab-hardware', this)">💻 Hardware &amp; SoC</button>
+            <button class="tab-btn" onclick="showTab('tab-hardware', this)">💻 TV System &amp; Providers</button>
             <button class="tab-btn" onclick="showTab('tab-logs', this)">📜 Live Logcat</button>
             <button class="tab-btn" onclick="showTab('tab-backup', this)">💾 Backup &amp; Restore</button>
         </div>
@@ -1346,10 +1589,58 @@ class OscamLocalConfigWebServer(
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">Real-Time DVB Telemetry &amp; Latency Analytics</div>
-                        <div class="panel-desc">Dynamic monitoring of OSCam &amp; Newcamd round-trip time and ECM throughput.</div>
+                        <div class="panel-title">Real-Time DVB Telemetry &amp; Satellite Reception</div>
+                        <div class="panel-desc">Dynamic monitoring of Satellite Coaxial Cable, LNB carrier signal, and ECM throughput.</div>
                     </div>
-                    <button type="button" class="btn btn-outline" onclick="flushCwCache()">Flush CW Cache</button>
+                    <div style="display:flex; gap:8px;">
+                        <button type="button" class="btn btn-outline" onclick="fetchTvAndTunerInfo()">🔄 Refresh Tuner</button>
+                        <button type="button" class="btn btn-outline" onclick="toggleSatelliteCable()">⚡ Toggle Cable Test</button>
+                        <button type="button" class="btn btn-outline" onclick="flushCwCache()">Flush CW Cache</button>
+                    </div>
+                </div>
+
+                <!-- Satellite Coaxial Cable & LNB Real-Time Status Card -->
+                <div id="satellite-cable-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:18px; margin-bottom:18px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                            <div id="cable-status-indicator" style="display:flex; align-items:center; gap:8px; padding:6px 16px; border-radius:9999px; font-weight:800; font-size:13px; letter-spacing:0.3px; background:${if (tuner.cableConnected) "rgba(16,185,129,0.15); color:#10B981; border:1px solid #10B981;" else "rgba(239,68,68,0.15); color:#EF4444; border:1px solid #EF4444;"}">
+                                <span id="cable-status-dot" style="width:10px; height:10px; border-radius:50%; background:${if (tuner.cableConnected) "#10B981" else "#EF4444"}; box-shadow:0 0 10px ${if (tuner.cableConnected) "#10B981" else "#EF4444"}; display:inline-block;"></span>
+                                <span id="cable-status-text">${if (tuner.cableConnected) "SATELLITE CABLE CONNECTED" else "SATELLITE CABLE DISCONNECTED"}</span>
+                            </div>
+                            <span id="tuner-carrier-badge" style="background:rgba(59,130,246,0.15); color:#60A5FA; border:1px solid #3B82F6; padding:4px 12px; border-radius:6px; font-size:11px; font-weight:700;">${if (tuner.carrierLocked) "DVB-S2 CARRIER LOCKED" else "NO CARRIER"}</span>
+                            <span id="tuner-sat-badge" style="background:rgba(139,92,246,0.15); color:#C4B5FD; border:1px solid #8B5CF6; padding:4px 12px; border-radius:6px; font-size:11px; font-weight:700;">🛰️ ${tuner.activeSatellite} (${tuner.frequencyMhz} MHz ${tuner.polarization})</span>
+                        </div>
+                        <div style="font-size:12px; color:var(--text-muted);">
+                            Frontend: <code id="tuner-node-text">${tuner.frontendDeviceNode}</code>
+                        </div>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:14px; align-items:center;">
+                        <div>
+                            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:5px; color:var(--text-muted);">
+                                <span>Signal Strength (RF Input Level)</span>
+                                <strong id="tuner-signal-val" style="color:${if (tuner.signalStrengthPercent > 60) "var(--success)" else if (tuner.signalStrengthPercent > 20) "var(--warning)" else "var(--danger)"};">${tuner.signalStrengthPercent}%</strong>
+                            </div>
+                            <div style="background:rgba(255,255,255,0.06); border-radius:6px; height:9px; overflow:hidden;">
+                                <div id="tuner-signal-bar" style="width:${tuner.signalStrengthPercent}%; height:100%; background:linear-gradient(90deg, #10B981, #059669); transition:width 0.4s;"></div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:5px; color:var(--text-muted);">
+                                <span>Signal Quality (SNR Link Margin)</span>
+                                <strong id="tuner-snr-val" style="color:var(--primary);">${tuner.snrDb} dB</strong>
+                            </div>
+                            <div style="background:rgba(255,255,255,0.06); border-radius:6px; height:9px; overflow:hidden;">
+                                <div id="tuner-snr-bar" style="width:${Math.min(100, (tuner.snrDb * 6.5).toInt())}%; height:100%; background:linear-gradient(90deg, #3B82F6, #2563EB); transition:width 0.4s;"></div>
+                            </div>
+                        </div>
+
+                        <div style="font-size:12px; line-height:1.6; background:rgba(0,0,0,0.25); padding:8px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.05);">
+                            <div>LNB Power Supply: <strong id="tuner-lnb-val" style="color:#FFF;">${tuner.lnbVoltage}</strong></div>
+                            <div>Bit Error Rate (BER): <strong id="tuner-ber-val" style="color:var(--text-muted);">${tuner.ber}</strong></div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="charts-container">
@@ -1615,42 +1906,103 @@ class OscamLocalConfigWebServer(
             </div>
         </div>
 
-        <!-- TAB 7: Hardware & SoC Info -->
+        <!-- TAB 7: TV System, Tuner & Available Providers -->
         <div class="tab-pane" id="tab-hardware">
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">Android TV Hardware &amp; SoC Descrambler Engine</div>
-                        <div class="panel-desc">Live introspection of device architecture, demux drivers, and memory status.</div>
+                        <div class="panel-title">Android TV System, Satellite Tuner &amp; Available Providers</div>
+                        <div class="panel-desc">Live introspection of TV hardware SoC, Satellite LNB coaxial cable connectivity, and domestic provider matrix.</div>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        <button type="button" class="btn btn-primary" onclick="fetchTvAndTunerInfo()">🔄 Fetch Real-Time TV Data</button>
+                        <button type="button" class="btn btn-outline" onclick="toggleSatelliteCable()">⚡ Toggle Cable Test</button>
                     </div>
                 </div>
 
-                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px;">
+                <!-- Hardware Specifications Grid -->
+                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px;">
                     <div class="server-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">DEVICE MODEL &amp; OEM</div>
-                        <div style="font-size:18px; font-weight:800; color:#FFF; margin-top:4px;">${hw.manufacturer} ${hw.model}</div>
+                        <div style="font-size:17px; font-weight:800; color:#FFF; margin-top:4px;">${hw.manufacturer} ${hw.model}</div>
                         <div class="hint">Board: ${hw.board} (${hw.hardware})</div>
                     </div>
 
                     <div class="server-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">CHIPSET ADAPTER</div>
-                        <div style="font-size:18px; font-weight:800; color:var(--accent); margin-top:4px;">${hw.detectedChipset}</div>
+                        <div style="font-size:17px; font-weight:800; color:var(--accent); margin-top:4px;">${hw.detectedChipset}</div>
                         <div class="hint">Active HAL Abstraction Driver</div>
                     </div>
 
                     <div class="server-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">ANDROID OS &amp; API LEVEL</div>
-                        <div style="font-size:18px; font-weight:800; color:var(--primary); margin-top:4px;">Android ${hw.androidVersion} (API ${hw.sdkInt})</div>
+                        <div style="font-size:17px; font-weight:800; color:var(--primary); margin-top:4px;">Android ${hw.androidVersion} (API ${hw.sdkInt})</div>
                         <div class="hint">VINTF Manifest Compatibility: Active</div>
                     </div>
 
                     <div class="server-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">RAM MEMORY ALLOCATION</div>
-                        <div style="font-size:18px; font-weight:800; color:var(--success); margin-top:4px;">${hw.availableMemoryMb} MB free / ${hw.totalMemoryMb} MB total</div>
+                        <div style="font-size:17px; font-weight:800; color:var(--success); margin-top:4px;">${hw.availableMemoryMb} MB free / ${hw.totalMemoryMb} MB total</div>
                         <div class="hint">Zero-Leak Buffer Management</div>
+                    </div>
+
+                    <div class="server-card">
+                        <div style="font-size:11px; color:var(--text-muted); font-weight:700;">DISPLAY &amp; RESOLUTION</div>
+                        <div id="tv-display-info" style="font-size:17px; font-weight:800; color:#60A5FA; margin-top:4px;">4K UHD (3840x2160) @ 120Hz</div>
+                        <div class="hint">HDR10, HDR10+, Dolby Vision, HLG</div>
+                    </div>
+
+                    <div class="server-card">
+                        <div style="font-size:11px; color:var(--text-muted); font-weight:700;">INTERNAL STORAGE</div>
+                        <div id="tv-storage-info" style="font-size:17px; font-weight:800; color:#C4B5FD; margin-top:4px;">Flash Memory Active</div>
+                        <div class="hint">Android TV /data partition</div>
+                    </div>
+
+                    <div class="server-card">
+                        <div style="font-size:11px; color:var(--text-muted); font-weight:700;">ACTIVE NETWORK INTERFACE</div>
+                        <div id="tv-network-info" style="font-size:17px; font-weight:800; color:#FCD34D; margin-top:4px;">Ethernet / Wi-Fi Active</div>
+                        <div class="hint">Direct LAN communication</div>
                     </div>
                 </div>
 
+                <!-- Satellite Tuner & LNB Diagnostic Section -->
+                <div style="margin-top:20px; background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:18px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+                        <div>
+                            <div style="font-weight:700; font-size:15px; color:#FFF;">Satellite Tuner Hardware &amp; Coaxial Cable Diagnostic</div>
+                            <div class="hint">Inspects Linux DVB frontend nodes, RF carrier demodulation, and LNB power delivery.</div>
+                        </div>
+                        <button type="button" class="btn btn-outline" style="padding:6px 12px; font-size:11px;" onclick="toggleSatelliteCable()">⚡ Toggle Cable Test</button>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
+                        <div style="background:rgba(0,0,0,0.25); border:1px solid var(--border); border-radius:8px; padding:12px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">COAXIAL CABLE STATUS</div>
+                            <div id="diag-cable-text" style="font-size:15px; font-weight:800; color:${if (tuner.cableConnected) "var(--success)" else "var(--danger)"}; margin-top:4px;">${if (tuner.cableConnected) "✓ Connected (LNB Active)" else "✗ Disconnected"}</div>
+                            <div class="hint">Physical F-Type Connector</div>
+                        </div>
+
+                        <div style="background:rgba(0,0,0,0.25); border:1px solid var(--border); border-radius:8px; padding:12px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">CARRIER DEMODULATION</div>
+                            <div id="diag-carrier-text" style="font-size:15px; font-weight:800; color:var(--primary); margin-top:4px;">${if (tuner.carrierLocked) "Locked (QPSK / 8PSK)" else "Unlocked"}</div>
+                            <div class="hint">${tuner.deliverySystem}</div>
+                        </div>
+
+                        <div style="background:rgba(0,0,0,0.25); border:1px solid var(--border); border-radius:8px; padding:12px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">LNB POWER &amp; POLARIZATION</div>
+                            <div id="diag-lnb-text" style="font-size:15px; font-weight:800; color:#FCD34D; margin-top:4px;">${tuner.lnbVoltage}</div>
+                            <div class="hint">Tone 22kHz: ${if (tuner.tone22kHz) "Active (High-Band)" else "Off (Low-Band)"}</div>
+                        </div>
+
+                        <div style="background:rgba(0,0,0,0.25); border:1px solid var(--border); border-radius:8px; padding:12px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">FRONTEND CHARACTER NODE</div>
+                            <div id="diag-node-text" style="font-size:13px; font-weight:700; color:#E2E8F0; margin-top:4px;"><code>${tuner.frontendDeviceNode}</code></div>
+                            <div class="hint">Hardware CA: ${if (tuner.hardwareDetected) "Physical DVB Adapter" else "Universal HAL Fallback"}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- OEM TV Playback App Compatibility -->
                 <div style="margin-top:20px; border-top:1px solid var(--border); padding-top:16px;">
                     <div style="font-weight:700; font-size:15px; color:#FFF; margin-bottom:6px;">Native TV Player &amp; OEM Broadcast App Compatibility</div>
                     <div class="hint" style="margin-bottom:14px;">Direct integration with manufacturer tuner applications (Deeply optimized for TCL, Sony Bravia, Philips, Xiaomi, Hisense).</div>
@@ -1667,6 +2019,19 @@ class OscamLocalConfigWebServer(
                             <div class="hint" style="margin-top:4px;">Direct demux injection via /dev/amstream_mpps &amp; /dev/rtd_ca0</div>
                         </div>
                     </div>
+                </div>
+
+                <!-- Available Domestic Providers Directory -->
+                <div style="margin-top:20px; border-top:1px solid var(--border); padding-top:16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+                        <div>
+                            <div style="font-weight:700; font-size:15px; color:#FFF;">Available Domestic Satellite &amp; Terrestrial Providers</div>
+                            <div class="hint">Pre-configured provider templates. Click '+ CCcam', '+ OSCam', or '+ Newcamd' to configure into your server list.</div>
+                        </div>
+                        <button type="button" class="btn btn-outline" style="padding:6px 12px; font-size:11px;" onclick="fetchTvAndTunerInfo()">🔄 Reload Providers</button>
+                    </div>
+
+                    <div id="available-providers-container" style="display:flex; flex-direction:column; gap:8px;"></div>
                 </div>
             </div>
         </div>

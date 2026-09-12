@@ -1,16 +1,20 @@
 // jni/com_oscam_cas_OscamCasPlugin.cpp
 //
 // JNI implementation bridging Android TV Kotlin layer with native C++ engine.
-// Maps UI/Service requests to DvbapiClient, feeds software stream descrambler,
-// and dispatches asynchronous callbacks to the JVM.
+// Provides multi-protocol OSCam support (DVBAPI TCP/UNIX, Cs378x, Radegast, Newcamd, CCcam, WebIF).
+// Provides dual namespace JNI exports for both:
+//   - .OscamNativeBridge
+//   - com.oscam.cas.OscamNativeBridge
 //
-// Author: android-oscam-bridge
+// Author: Eneko Lizarraga (eneko@lizarraga.eus)
+// License: CC BY-NC-SA 4.0 (Non-commercial, Attribution Required)
 
 #include "NativeBridge.h"
 #include "../bridge/include/BridgeLogger.h"
 
 #include <chrono>
 #include <cstring>
+#include <sstream>
 #include <vector>
 
 #ifdef _WIN32
@@ -46,172 +50,169 @@ NativeBridge::~NativeBridge() {
 }
 
 bool NativeBridge::initialize(const std::string& host, uint16_t port, const std::vector<uint16_t>& supportedCaids) {
+    return initializeEx(host, port, static_cast<uint8_t>(ProtocolType::DVBAPI_TCP), "android_tv", "android_tv",
+                        "0102030405060708091011121314", supportedCaids);
+}
+
+bool NativeBridge::initializeEx(const std::string& host, uint16_t port, uint8_t protocol,
+                               const std::string& user, const std::string& password,
+                               const std::string& desKey, const std::vector<uint16_t>& supportedCaids) {
     std::lock_guard<std::mutex> lock(mutex_);
     host_ = host;
     port_ = port;
+    protocol_ = protocol;
+    user_ = user;
+    password_ = password;
+    desKey_ = desKey;
     supportedCaids_ = supportedCaids;
 
-    BRIDGE_LOGI("NativeBridge::initialize -> Host: %s, Port: %u, CAIDs: %zu",
-                host.c_str(), port, supportedCaids.size());
+    BRIDGE_LOGI("NativeBridge::initializeEx -> Host: %s, Port: %u, Proto: %u, CAIDs: %zu",
+                host.c_str(), port, protocol, supportedCaids.size());
 
-    dvbapi::ConnectionConfig cfg;
-    cfg.host = host_;
-    cfg.port = port_;
-    cfg.connectTimeoutSec = 4;
-    cfg.recvTimeoutSec = 8;
-    cfg.maxReconnectAttempts = 0; // Continuous reconnection with backoff
-    cfg.initialBackoffMs = 1000;
-    cfg.maxBackoffMs = 30000;
-
-    dvbapi::DvbapiCallbacks cbs;
-    cbs.OnConnectionChanged = [this](bool connected) {
+    OscamClientCallbacks cbs;
+    cbs.onConnectionChanged = [this](bool connected) {
         ConnectionState state = connected ? ConnectionState::Connected : ConnectionState::Connecting;
         connectionState_ = state;
         BRIDGE_LOGI("NativeBridge: Connection status changed to: %s", connected ? "CONNECTED" : "CONNECTING...");
         notifyJavaConnectionChanged(state);
     };
 
-    cbs.OnCaSetDescr = [this](const dvbapi::CaDescr& descr) {
+    cbs.onControlWord = [this](uint16_t serviceId, uint8_t parity, const uint8_t* cw, size_t length) {
         stats_.cwReceivedCount++;
         stats_.lastCwTimeMs = static_cast<uint32_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count() & 0xFFFFFFFF);
 
-        BRIDGE_LOGD("NativeBridge: CW received for index %u (parity: %u, length: %zu)",
-                    descr.index, descr.parity, descr.cw.size());
+        BRIDGE_LOGD("NativeBridge: CW received for SID 0x%04X (parity: %u, len: %zu)",
+                    serviceId, parity, length);
 
-        // Update software descrambler for external streams/recordings
-        if (softwareDescrambler_ && descr.cw.size() >= 8) {
+        if (softwareDescrambler_ && length >= 8) {
             std::array<uint8_t, 8> cw8{};
-            std::memcpy(cw8.data(), descr.cw.data(), 8);
-            softwareDescrambler_->setControlWord(static_cast<uint16_t>(descr.index), descr.parity, cw8);
+            std::memcpy(cw8.data(), cw, 8);
+            softwareDescrambler_->setControlWord(serviceId, parity, cw8);
         }
 
-        notifyJavaCwReceived(static_cast<int32_t>(descr.index), descr.cw);
+        std::vector<uint8_t> cwVec(cw, cw + length);
+        notifyJavaCwReceived(static_cast<int32_t>(serviceId), cwVec);
     };
 
-    cbs.OnFatalError = [this](const std::string& reason) {
+    cbs.onError = [this](const std::string& reason) {
         {
             std::lock_guard<std::mutex> lk(mutex_);
             lastError_ = reason;
         }
         connectionState_ = ConnectionState::Error;
-        BRIDGE_LOGE("NativeBridge: Fatal dvbapi error: %s", reason.c_str());
+        BRIDGE_LOGE("NativeBridge: OSCam client error: %s", reason.c_str());
         notifyJavaConnectionChanged(ConnectionState::Error);
     };
 
-    dvbapiClient_ = std::make_shared<dvbapi::DvbapiClient>(cfg, std::move(cbs));
+    connManager_ = std::make_shared<OscamConnectionManager>(cbs);
+
+    ServerProfile profile;
+    profile.name = "Active Server";
+    profile.protocol = static_cast<ProtocolType>(protocol_);
+    profile.host = host_;
+    profile.port = port_;
+    profile.user = user_;
+    profile.password = password_;
+    profile.desKey = desKey_;
+    profile.caid = supportedCaids_.empty() ? 0x1810 : supportedCaids_[0];
+    profile.enabled = true;
+    profile.isPrimary = true;
+
+    connManager_->setServers({profile});
     return true;
 }
 
 bool NativeBridge::start() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!dvbapiClient_) {
-        lastError_ = "Dvbapi client is not initialized.";
+    if (!connManager_) {
+        lastError_ = "Connection manager is not initialized.";
         BRIDGE_LOGE("NativeBridge::start -> %s", lastError_.c_str());
         return false;
     }
     connectionState_ = ConnectionState::Connecting;
     notifyJavaConnectionChanged(ConnectionState::Connecting);
-    dvbapiClient_->start();
-    BRIDGE_LOGI("NativeBridge::start -> Client started.");
-    return true;
+    bool ok = connManager_->start();
+    BRIDGE_LOGI("NativeBridge::start -> ConnectionManager start result: %d", ok ? 1 : 0);
+    return ok;
 }
 
 void NativeBridge::stop() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (dvbapiClient_) {
-        dvbapiClient_->stop();
-        dvbapiClient_.reset();
+    if (connManager_) {
+        connManager_->stop();
+        connManager_.reset();
     }
     connectionState_ = ConnectionState::Disconnected;
     notifyJavaConnectionChanged(ConnectionState::Disconnected);
-    BRIDGE_LOGI("NativeBridge::stop -> Client stopped.");
+    BRIDGE_LOGI("NativeBridge::stop -> ConnectionManager stopped.");
 }
 
 bool NativeBridge::testConnection(const std::string& host, uint16_t port, int32_t timeoutMs) {
-    BRIDGE_LOGI("NativeBridge::testConnection testing %s:%u (timeout %d ms)...",
-                host.c_str(), port, timeoutMs);
+    std::string outRes;
+    return testConnectionEx(host, port, static_cast<uint8_t>(ProtocolType::DVBAPI_TCP),
+                            "android_tv", "android_tv", "0102030405060708091011121314",
+                            timeoutMs, outRes);
+}
 
-    struct addrinfo hints;
-    std::memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
+bool NativeBridge::testConnectionEx(const std::string& host, uint16_t port, uint8_t protocol,
+                                   const std::string& user, const std::string& password,
+                                   const std::string& desKey, int32_t timeoutMs, std::string& outResult) {
+    ServerProfile profile;
+    profile.host = host;
+    profile.port = port;
+    profile.protocol = static_cast<ProtocolType>(protocol);
+    profile.user = user;
+    profile.password = password;
+    profile.desKey = desKey;
 
-    struct addrinfo* res = nullptr;
-    std::string portStr = std::to_string(port);
-    if (::getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0 || res == nullptr) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        lastError_ = "Could not resolve host: " + host;
-        BRIDGE_LOGE("testConnection: getaddrinfo failed for %s", host.c_str());
-        return false;
-    }
-
-#ifdef _WIN32
-    SOCKET sock = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (sock == INVALID_SOCKET) {
-        ::freeaddrinfo(res);
-        return false;
-    }
-    u_long nonBlocking = 1;
-    ::ioctlsocket(sock, FIONBIO, &nonBlocking);
-#else
-    int sock = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (sock < 0) {
-        ::freeaddrinfo(res);
-        return false;
-    }
-    int flags = ::fcntl(sock, F_GETFL, 0);
-    ::fcntl(sock, F_SETFL, flags | O_NONBLOCK);
-#endif
-
-    int connRes = ::connect(sock, res->ai_addr, static_cast<int>(res->ai_addrlen));
-    ::freeaddrinfo(res);
-
-    bool success = false;
-    if (connRes == 0) {
-        success = true;
-    } else {
-        fd_set writeFds;
-        FD_ZERO(&writeFds);
-#if defined(_MSC_VER)
-#  pragma warning(push)
-#  pragma warning(disable: 4548)
-#endif
-        FD_SET(sock, &writeFds);
-#if defined(_MSC_VER)
-#  pragma warning(pop)
-#endif
-
-        struct timeval tv;
-        tv.tv_sec = timeoutMs / 1000;
-        tv.tv_usec = (timeoutMs % 1000) * 1000;
-
-        int sel = ::select(static_cast<int>(sock + 1), nullptr, &writeFds, nullptr, &tv);
-        if (sel > 0 && FD_ISSET(sock, &writeFds)) {
-            int sockErr = 0;
-#ifdef _WIN32
-            int errLen = sizeof(sockErr);
-            ::getsockopt(sock, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&sockErr), &errLen);
-#else
-            socklen_t errLen = sizeof(sockErr);
-            ::getsockopt(sock, SOL_SOCKET, SO_ERROR, &sockErr, &errLen);
-#endif
-            success = (sockErr == 0);
-        }
-    }
-
-    closesocket(sock);
-
+    bool ok = OscamConnectionManager::testServer(profile, timeoutMs, outResult);
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!success) {
-        lastError_ = "Connection refused or timeout reached.";
+    if (!ok) {
+        lastError_ = outResult;
     } else {
         lastError_.clear();
     }
-    BRIDGE_LOGI("NativeBridge::testConnection result: %s", success ? "OK" : "FAILED");
-    return success;
+    return ok;
+}
+
+std::string NativeBridge::queryWebIfStatus(const std::string& host, uint16_t port,
+                                          const std::string& user, const std::string& password) {
+    webif::WebIfConfig cfg;
+    cfg.host = host;
+    cfg.port = port;
+    cfg.user = user;
+    cfg.password = password;
+    cfg.timeoutSec = 3;
+
+    webif::OscamWebIfClient client(cfg);
+    webif::OscamServerStatus status;
+    if (client.queryStatus(status)) {
+        std::ostringstream ss;
+        ss << "Status: OK | Version: " << status.version;
+        if (!status.activeCaid.empty()) ss << " | CAID: " << status.activeCaid;
+        if (!status.activeReader.empty()) ss << " | Reader: " << status.activeReader;
+        if (status.lastEcmTimeMs > 0) ss << " | Time: " << status.lastEcmTimeMs << "ms";
+        return ss.str();
+    }
+    return "WebIF: Offline / Unreachable";
+}
+
+bool NativeBridge::failoverNext() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (connManager_) {
+        return connManager_->failoverNext();
+    }
+    return false;
+}
+
+std::string NativeBridge::getActiveServerDescription() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (connManager_) {
+        return connManager_->getActiveServerDescription();
+    }
+    return "No active connection manager";
 }
 
 size_t NativeBridge::descrambleBuffer(uint8_t* buffer, size_t size) {
@@ -331,16 +332,16 @@ void NativeBridge::notifyJavaCwReceived(int32_t sessionHandle, const std::vector
 } // namespace oscam::jni
 
 // ---------------------------------------------------------------------------
-// JNI Exports for com.oscam.cas.OscamNativeBridge
+// Unified JNI Bridge Implementation Handlers
 // ---------------------------------------------------------------------------
-
-extern "C" {
 
 static JavaVM* gJavaVM = nullptr;
 
+extern "C" {
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
     gJavaVM = vm;
-    BRIDGE_LOGI("JNI_OnLoad initialized successfully");
+    BRIDGE_LOGI("JNI_OnLoad initialized successfully (Dual-Package Native Engine)");
     return JNI_VERSION_1_6;
 }
 
@@ -353,139 +354,158 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* /*reserved*/) {
     BRIDGE_LOGI("JNI_OnUnload executed successfully");
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeInit(
-    JNIEnv* env,
-    jobject /*thiz*/,
-    jstring host,
-    jint port,
-    jintArray caids) {
-    if (!host) {
-        return JNI_FALSE;
-    }
-
-    const char* hostChars = env->GetStringUTFChars(host, nullptr);
-    std::string hostStr(hostChars);
-    env->ReleaseStringUTFChars(host, hostChars);
+static jboolean impl_nativeInit(JNIEnv* env, jstring host, jint port, jintArray caids) {
+    if (!host) return JNI_FALSE;
+    const char* hChars = env->GetStringUTFChars(host, nullptr);
+    std::string hostStr(hChars);
+    env->ReleaseStringUTFChars(host, hChars);
 
     std::vector<uint16_t> caidVec;
     if (caids) {
         jsize len = env->GetArrayLength(caids);
         jint* body = env->GetIntArrayElements(caids, nullptr);
         if (body) {
-            for (jsize i = 0; i < len; ++i) {
-                caidVec.push_back(static_cast<uint16_t>(body[i]));
-            }
+            for (jsize i = 0; i < len; ++i) caidVec.push_back(static_cast<uint16_t>(body[i]));
+            env->ReleaseIntArrayElements(caids, body, JNI_ABORT);
+        }
+    }
+    return oscam::jni::NativeBridge::getInstance().initialize(hostStr, static_cast<uint16_t>(port), caidVec) ? JNI_TRUE : JNI_FALSE;
+}
+
+static jboolean impl_nativeInitEx(JNIEnv* env, jstring host, jint port, jint protocol,
+                                 jstring user, jstring password, jstring desKey, jintArray caids) {
+    if (!host) return JNI_FALSE;
+    const char* hChars = env->GetStringUTFChars(host, nullptr);
+    std::string hostStr(hChars);
+    env->ReleaseStringUTFChars(host, hChars);
+
+    std::string userStr = user ? env->GetStringUTFChars(user, nullptr) : "android_tv";
+    std::string passStr = password ? env->GetStringUTFChars(password, nullptr) : "android_tv";
+    std::string desStr  = desKey ? env->GetStringUTFChars(desKey, nullptr) : "0102030405060708091011121314";
+
+    std::vector<uint16_t> caidVec;
+    if (caids) {
+        jsize len = env->GetArrayLength(caids);
+        jint* body = env->GetIntArrayElements(caids, nullptr);
+        if (body) {
+            for (jsize i = 0; i < len; ++i) caidVec.push_back(static_cast<uint16_t>(body[i]));
             env->ReleaseIntArrayElements(caids, body, JNI_ABORT);
         }
     }
 
-    bool res = oscam::jni::NativeBridge::getInstance().initialize(hostStr, static_cast<uint16_t>(port), caidVec);
-    return res ? JNI_TRUE : JNI_FALSE;
+    bool ok = oscam::jni::NativeBridge::getInstance().initializeEx(
+        hostStr, static_cast<uint16_t>(port), static_cast<uint8_t>(protocol),
+        userStr, passStr, desStr, caidVec);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeStart(JNIEnv* /*env*/, jobject /*thiz*/) {
+static jboolean impl_nativeStart() {
     return oscam::jni::NativeBridge::getInstance().start() ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT void JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeStop(JNIEnv* /*env*/, jobject /*thiz*/) {
+static void impl_nativeStop() {
     oscam::jni::NativeBridge::getInstance().stop();
 }
 
-JNIEXPORT jint JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeGetStatus(JNIEnv* /*env*/, jobject /*thiz*/) {
+static jint impl_nativeGetStatus() {
     return static_cast<jint>(oscam::jni::NativeBridge::getInstance().getConnectionState());
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeTestConnection(
-    JNIEnv* env,
-    jobject /*thiz*/,
-    jstring host,
-    jint port,
-    jint timeoutMs) {
-    if (!host) {
-        return JNI_FALSE;
-    }
-
-    const char* hostChars = env->GetStringUTFChars(host, nullptr);
-    std::string hostStr(hostChars);
-    env->ReleaseStringUTFChars(host, hostChars);
-
-    bool res = oscam::jni::NativeBridge::getInstance().testConnection(hostStr, static_cast<uint16_t>(port), timeoutMs);
-    return res ? JNI_TRUE : JNI_FALSE;
+static jboolean impl_nativeTestConnection(JNIEnv* env, jstring host, jint port, jint timeoutMs) {
+    if (!host) return JNI_FALSE;
+    const char* h = env->GetStringUTFChars(host, nullptr);
+    std::string hostStr(h);
+    env->ReleaseStringUTFChars(host, h);
+    return oscam::jni::NativeBridge::getInstance().testConnection(hostStr, static_cast<uint16_t>(port), timeoutMs) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jlongArray JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeGetStats(JNIEnv* env, jobject /*thiz*/) {
+static jstring impl_nativeTestConnectionEx(JNIEnv* env, jstring host, jint port, jint protocol,
+                                          jstring user, jstring password, jstring desKey, jint timeoutMs) {
+    if (!host) return env->NewStringUTF("Host is null");
+    const char* h = env->GetStringUTFChars(host, nullptr);
+    std::string hostStr(h);
+    env->ReleaseStringUTFChars(host, h);
+
+    std::string userStr = user ? env->GetStringUTFChars(user, nullptr) : "";
+    std::string passStr = password ? env->GetStringUTFChars(password, nullptr) : "";
+    std::string desStr  = desKey ? env->GetStringUTFChars(desKey, nullptr) : "";
+
+    std::string result;
+    bool ok = oscam::jni::NativeBridge::getInstance().testConnectionEx(
+        hostStr, static_cast<uint16_t>(port), static_cast<uint8_t>(protocol),
+        userStr, passStr, desStr, timeoutMs, result);
+    return env->NewStringUTF(result.c_str());
+}
+
+static jstring impl_nativeQueryWebIfStatus(JNIEnv* env, jstring host, jint port, jstring user, jstring password) {
+    if (!host) return env->NewStringUTF("Host is null");
+    const char* h = env->GetStringUTFChars(host, nullptr);
+    std::string hostStr(h);
+    env->ReleaseStringUTFChars(host, h);
+
+    std::string userStr = user ? env->GetStringUTFChars(user, nullptr) : "";
+    std::string passStr = password ? env->GetStringUTFChars(password, nullptr) : "";
+
+    std::string info = oscam::jni::NativeBridge::getInstance().queryWebIfStatus(
+        hostStr, static_cast<uint16_t>(port), userStr, passStr);
+    return env->NewStringUTF(info.c_str());
+}
+
+static jboolean impl_nativeFailoverNext() {
+    return oscam::jni::NativeBridge::getInstance().failoverNext() ? JNI_TRUE : JNI_FALSE;
+}
+
+static jstring impl_nativeGetActiveServerDescription(JNIEnv* env) {
+    std::string desc = oscam::jni::NativeBridge::getInstance().getActiveServerDescription();
+    return env->NewStringUTF(desc.c_str());
+}
+
+static jlongArray impl_nativeGetStats(JNIEnv* env) {
     const auto& stats = oscam::jni::NativeBridge::getInstance().getStats();
-    jlong statsArray[5];
+    jlong statsArray[6];
     statsArray[0] = static_cast<jlong>(stats.ecmSentCount.load());
     statsArray[1] = static_cast<jlong>(stats.cwReceivedCount.load());
     statsArray[2] = static_cast<jlong>(stats.emmSentCount.load());
     statsArray[3] = static_cast<jlong>(stats.lastCwTimeMs.load());
     statsArray[4] = static_cast<jlong>(stats.reconnectCount.load());
+    statsArray[5] = static_cast<jlong>(stats.failoverCount.load());
 
-    jlongArray res = env->NewLongArray(5);
+    jlongArray res = env->NewLongArray(6);
     if (res) {
-        env->SetLongArrayRegion(res, 0, 5, statsArray);
+        env->SetLongArrayRegion(res, 0, 6, statsArray);
     }
     return res;
 }
 
-JNIEXPORT jstring JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeGetLastError(JNIEnv* env, jobject /*thiz*/) {
+static jstring impl_nativeGetLastError(JNIEnv* env) {
     std::string err = oscam::jni::NativeBridge::getInstance().getLastError();
     return env->NewStringUTF(err.c_str());
 }
 
-JNIEXPORT void JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeRegisterCallback(
-    JNIEnv* env,
-    jobject /*thiz*/,
-    jobject callback) {
+static void impl_nativeRegisterCallback(JNIEnv* env, jobject callback) {
     if (!callback) return;
-    jobject globalRef = env->NewGlobalRef(callback);
-    oscam::jni::NativeBridge::getInstance().setJavaCallback(gJavaVM, globalRef);
+    jobject gRef = env->NewGlobalRef(callback);
+    oscam::jni::NativeBridge::getInstance().setJavaCallback(gJavaVM, gRef);
 }
 
-JNIEXPORT void JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeUnregisterCallback(JNIEnv* env, jobject /*thiz*/) {
+static void impl_nativeUnregisterCallback(JNIEnv* env) {
     oscam::jni::NativeBridge::getInstance().clearJavaCallback(env);
 }
 
-JNIEXPORT jint JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeDescrambleBuffer(
-    JNIEnv* env,
-    jobject /*thiz*/,
-    jbyteArray buffer,
-    jint offset,
-    jint length) {
+static jint impl_nativeDescrambleBuffer(JNIEnv* env, jbyteArray buffer, jint offset, jint length) {
     if (!buffer || length <= 0) return 0;
-
     jbyte* bufPtr = env->GetByteArrayElements(buffer, nullptr);
     if (!bufPtr) return 0;
-
     size_t processed = oscam::jni::NativeBridge::getInstance().descrambleBuffer(
         reinterpret_cast<uint8_t*>(bufPtr + offset), static_cast<size_t>(length));
-
     env->ReleaseByteArrayElements(buffer, bufPtr, 0);
     return static_cast<jint>(processed);
 }
 
-JNIEXPORT void JNICALL
-Java_com_oscam_cas_OscamNativeBridge_nativeSetSoftwareCw(
-    JNIEnv* env,
-    jobject /*thiz*/,
-    jint pid,
-    jint parity,
-    jbyteArray cw) {
+static void impl_nativeSetSoftwareCw(JNIEnv* env, jint pid, jint parity, jbyteArray cw) {
     if (!cw) return;
     jsize len = env->GetArrayLength(cw);
     if (len < 8) return;
-
     jbyte* cwPtr = env->GetByteArrayElements(cw, nullptr);
     if (cwPtr) {
         oscam::jni::NativeBridge::getInstance().setSoftwareCw(
@@ -493,6 +513,194 @@ Java_com_oscam_cas_OscamNativeBridge_nativeSetSoftwareCw(
             reinterpret_cast<const uint8_t*>(cwPtr));
         env->ReleaseByteArrayElements(cw, cwPtr, JNI_ABORT);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Exports for .OscamNativeBridge
+// ---------------------------------------------------------------------------
+
+JNIEXPORT jboolean JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeInit(
+    JNIEnv* env, jobject /*thiz*/, jstring host, jint port, jintArray caids) {
+    return impl_nativeInit(env, host, port, caids);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeInitEx(
+    JNIEnv* env, jobject /*thiz*/, jstring host, jint port, jint protocol,
+    jstring user, jstring password, jstring desKey, jintArray caids) {
+    return impl_nativeInitEx(env, host, port, protocol, user, password, desKey, caids);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeStart(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return impl_nativeStart();
+}
+
+JNIEXPORT void JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeStop(JNIEnv* /*env*/, jobject /*thiz*/) {
+    impl_nativeStop();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeGetStatus(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return impl_nativeGetStatus();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeTestConnection(
+    JNIEnv* env, jobject /*thiz*/, jstring host, jint port, jint timeoutMs) {
+    return impl_nativeTestConnection(env, host, port, timeoutMs);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeTestConnectionEx(
+    JNIEnv* env, jobject /*thiz*/, jstring host, jint port, jint protocol,
+    jstring user, jstring password, jstring desKey, jint timeoutMs) {
+    return impl_nativeTestConnectionEx(env, host, port, protocol, user, password, desKey, timeoutMs);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeQueryWebIfStatus(
+    JNIEnv* env, jobject /*thiz*/, jstring host, jint port, jstring user, jstring password) {
+    return impl_nativeQueryWebIfStatus(env, host, port, user, password);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeFailoverNext(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return impl_nativeFailoverNext();
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeGetActiveServerDescription(JNIEnv* env, jobject /*thiz*/) {
+    return impl_nativeGetActiveServerDescription(env);
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeGetStats(JNIEnv* env, jobject /*thiz*/) {
+    return impl_nativeGetStats(env);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeGetLastError(JNIEnv* env, jobject /*thiz*/) {
+    return impl_nativeGetLastError(env);
+}
+
+JNIEXPORT void JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeRegisterCallback(
+    JNIEnv* env, jobject /*thiz*/, jobject callback) {
+    impl_nativeRegisterCallback(env, callback);
+}
+
+JNIEXPORT void JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeUnregisterCallback(JNIEnv* env, jobject /*thiz*/) {
+    impl_nativeUnregisterCallback(env);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeDescrambleBuffer(
+    JNIEnv* env, jobject /*thiz*/, jbyteArray buffer, jint offset, jint length) {
+    return impl_nativeDescrambleBuffer(env, buffer, offset, length);
+}
+
+JNIEXPORT void JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeSetSoftwareCw(
+    JNIEnv* env, jobject /*thiz*/, jint pid, jint parity, jbyteArray cw) {
+    impl_nativeSetSoftwareCw(env, pid, parity, cw);
+}
+
+// ---------------------------------------------------------------------------
+// 2. Backward compatibility exports for com.oscam.cas.OscamNativeBridge
+// ---------------------------------------------------------------------------
+
+JNIEXPORT jboolean JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeInit(
+    JNIEnv* env, jobject thiz, jstring host, jint port, jintArray caids) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeInit(env, thiz, host, port, caids);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeInitEx(
+    JNIEnv* env, jobject thiz, jstring host, jint port, jint protocol,
+    jstring user, jstring password, jstring desKey, jintArray caids) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeInitEx(env, thiz, host, port, protocol, user, password, desKey, caids);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeStart(JNIEnv* env, jobject thiz) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeStart(env, thiz);
+}
+
+JNIEXPORT void JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeStop(JNIEnv* env, jobject thiz) {
+    Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeStop(env, thiz);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeGetStatus(JNIEnv* env, jobject thiz) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeGetStatus(env, thiz);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeTestConnection(
+    JNIEnv* env, jobject thiz, jstring host, jint port, jint timeoutMs) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeTestConnection(env, thiz, host, port, timeoutMs);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeTestConnectionEx(
+    JNIEnv* env, jobject thiz, jstring host, jint port, jint protocol,
+    jstring user, jstring password, jstring desKey, jint timeoutMs) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeTestConnectionEx(env, thiz, host, port, protocol, user, password, desKey, timeoutMs);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeQueryWebIfStatus(
+    JNIEnv* env, jobject thiz, jstring host, jint port, jstring user, jstring password) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeQueryWebIfStatus(env, thiz, host, port, user, password);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeFailoverNext(JNIEnv* env, jobject thiz) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeFailoverNext(env, thiz);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeGetActiveServerDescription(JNIEnv* env, jobject thiz) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeGetActiveServerDescription(env, thiz);
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeGetStats(JNIEnv* env, jobject thiz) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeGetStats(env, thiz);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeGetLastError(JNIEnv* env, jobject thiz) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeGetLastError(env, thiz);
+}
+
+JNIEXPORT void JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeRegisterCallback(
+    JNIEnv* env, jobject thiz, jobject callback) {
+    Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeRegisterCallback(env, thiz, callback);
+}
+
+JNIEXPORT void JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeUnregisterCallback(JNIEnv* env, jobject thiz) {
+    Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeUnregisterCallback(env, thiz);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeDescrambleBuffer(
+    JNIEnv* env, jobject thiz, jbyteArray buffer, jint offset, jint length) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeDescrambleBuffer(env, thiz, buffer, offset, length);
+}
+
+JNIEXPORT void JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeSetSoftwareCw(
+    JNIEnv* env, jobject thiz, jint pid, jint parity, jbyteArray cw) {
+    Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeSetSoftwareCw(env, thiz, pid, parity, cw);
 }
 
 } // extern "C"
