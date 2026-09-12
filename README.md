@@ -18,6 +18,7 @@ An enterprise-grade, high-performance **Android TV Conditional Access System (CA
 ## Table of Contents
 
 - [How It Works (Architecture)](#how-it-works-architecture)
+- [Embedded TVHeadend Mode (100% No-Root DVB-IPTV Streaming)](#embedded-tvheadend-mode-100-no-root-dvb-iptv-streaming)
 - [Key Features](#key-features)
 - [Multi-Protocol Engine (OSCam DVBAPI, Newcamd v5.25 & CCcam)](#multi-protocol-engine-oscam-dvbapi-newcamd-v525--cccam)
 - [Native TV OEM Player Compatibility (TCL Focused)](#native-tv-oem-player-compatibility-tcl-focused)
@@ -88,6 +89,53 @@ This project implements a vendor AIDL CAS plugin (`vendor.oscam.cas.IOscamCasSer
    - For content **not tuned via the physical TV RF tuner** (e.g. encrypted `.ts` recordings on USB/NAS, SAT>IP IP-tuners, or network MPEG-TS feeds).
    - Built-in HTTP proxy at `http://127.0.0.1:9191/play?url=...` or `?file=...`.
    - Uses an in-memory optimized **DVB-CSA v1/v2 bit-slice descrambler engine** to serve clear video in real-time to any Android player.
+
+---
+
+## Embedded TVHeadend Mode (100% No-Root DVB-IPTV Streaming)
+
+> [!TIP]
+> **¿Tu Smart TV no está rooteada?** No necesitas root para ver canales descodificados. Esta aplicación incluye su propio **servidor TVHeadend autónomo** con descifrado DVB-CSA y clientes CCcam/OSCam integrados.
+> Consulta la guía paso a paso completa en: [**docs/TVHEADEND_NO_ROOT_GUIDE.md**](docs/TVHEADEND_NO_ROOT_GUIDE.md).
+
+### ¿Por qué no necesitas root? / Why No-Root is Essential
+En la mayoría de televisores comerciales modernos (**Sony Bravia**, **Philips Ambilight**, **TCL Google TV**, **Xiaomi Mi TV**, **Chromecast con Google TV**, **Fire TV**):
+- El gestor de arranque (*bootloader*) está bloqueado y el kernel opera con **SELinux en modo Enforcing**.
+- Intentar interceptar los drivers del sintonizador interno o emular un módulo CI por hardware requiere privilegios de superusuario (`root`), lo cual anula la garantía y puede romper los certificados Widevine L1 (necesarios para Netflix/Disney+ en 4K).
+
+### La Solución: TVHeadend Autónomo en Espacio de Usuario
+La aplicación actúa como un **servidor de streaming DVB-IPTV profesional** que se ejecuta como un proceso estándar en Android TV:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      ANDROID-OSCAM-BRIDGE (MODO SIN ROOT)                   │
+│                                                                             │
+│  1. Canales TV / Satélite     ──► Android TvContract / Transpondedores / SAT>IP│
+│  2. Cliente de Descodificación ──► CCcam 2.3.0 / OSCam dvbapi / Newcamd      │
+│  3. Motor Criptográfico DVB-CSA──► Descifrado en tiempo real en espacio usuario│
+│  4. Servidor TVHeadend Embebido──► Emisión MPEG-TS continua en puerto 9191  │
+│                                                                             │
+│        M3U:  http://<IP_TELE>:9191/playlist.m3u                             │
+│        EPG:  http://<IP_TELE>:9191/epg.xml                                  │
+│        VOD:  http://<IP_TELE>:9191/stream/channel/{serviceId}               │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+            ┌──────────────────────────┴──────────────────────────┐
+            ▼                                                     ▼
+┌───────────────────────────────┐     ┌───────────────────────────────────────┐
+│ EN LA PROPIA TELE (SIN ROOT): │     │ EN CUALQUIER DISPOSITIVO DE LA RED:   │
+│ • TiviMate IPTV Player        │     │ • Móvil / Tablet Android / iPhone     │
+│ • Kodi (PVR IPTV Simple)      │     │ • PC / Mac con VLC o Kodi             │
+│ • VLC para Android TV         │     │ • Segunda Smart TV en el dormitorio   │
+└───────────────────────────────┘     └───────────────────────────────────────┘
+```
+
+### Endpoints de Streaming y TVHeadend:
+- **Lista de Canales M3U**: `http://<IP_TELE>:9191/playlist.m3u` o `http://<IP_TELE>:8080/playlist.m3u`
+- **Guía de Programas EPG (XMLTV)**: `http://<IP_TELE>:9191/epg.xml` o `http://<IP_TELE>:8080/epg.xml`
+- **Flujo Directo MPEG-TS**: `http://<IP_TELE>:9191/stream/channel/{serviceId}`
+- **API Compatible TVHeadend**: `http://<IP_TELE>:9191/api/serverinfo` y `http://<IP_TELE>:9191/api/channel/grid`
+- **Proxy SAT>IP / IPTV / Grabaciones**: `http://<IP_TELE>:9191/play?url=<stream_url>`
 
 ---
 

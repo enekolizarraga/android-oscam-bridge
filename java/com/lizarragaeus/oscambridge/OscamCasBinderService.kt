@@ -154,8 +154,13 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
 
     private fun startStreamDescramblerServer() {
         try {
-            streamServer = StreamDescramblerServer(port = 9191).apply { start() }
-            Log.i(TAG, "StreamDescramblerServer ready at http://127.0.0.1:9191")
+            streamServer = StreamDescramblerServer(
+                context = applicationContext,
+                repository = repository,
+                port = 9191
+            ).apply { start() }
+            val localIp = getLocalIpAddress()
+            Log.i(TAG, "StreamDescramblerServer / Embedded TVHeadend ready at http://$localIp:9191")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting StreamDescramblerServer: ${e.message}", e)
         }

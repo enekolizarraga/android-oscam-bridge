@@ -126,6 +126,8 @@ class OscamLocalConfigWebServer(
                 // Playlists & Channel Exports
                 createContext("/playlist.m3u", PlaylistM3uHandler())
                 createContext("/channels.m3u", PlaylistM3uHandler())
+                createContext("/epg.xml", WebEpgXmlHandler())
+                createContext("/xmltv.xml", WebEpgXmlHandler())
                 createContext("/lamedb", LamedbExportHandler())
                 createContext("/api/channels/scan", ApiChannelsScanHandler())
                 createContext("/api/channels/import", ApiChannelsImportHandler())
@@ -2155,31 +2157,92 @@ class OscamLocalConfigWebServer(
                     val host = exchange.requestHeaders.getFirst("Host")?.split(":")?.get(0) ?: "127.0.0.1"
                     val config = repository.getCurrentConfig()
                     val m3u = StringBuilder()
-                    m3u.append("#EXTM3U name=\"Android TV Satellite Channel Stream Playlist\"\n\n")
+                    m3u.append("#EXTM3U name=\"Android TV OSCam Embedded TVHeadend Playlist\"\n")
+                    m3u.append("## X-TVH-SERVER: Android-OSCam-Bridge 4.3 TVHeadend-Compatible (No-Root)\n\n")
 
-                    if (config.channels.isNotEmpty()) {
-                        config.channels.forEach { ch ->
-                            val streamUrl = if (ch.streamUrl.isNotEmpty()) {
-                                ch.streamUrl.replace("127.0.0.1", host)
-                            } else {
-                                "http://$host:9191/play?url=http://satip-receiver/stream?freq=${ch.frequency}&pol=${ch.polarization.lowercase()}&sr=${ch.symbolRate}"
-                            }
-                            m3u.append("#EXTINF:-1 tvg-name=\"${ch.name}\" group-title=\"${ch.satellite}\" tvg-id=\"${ch.serviceId}\",${ch.name}\n")
-                            m3u.append("$streamUrl\n\n")
+                    val channels = config.channels.ifEmpty { OscamConfig.defaultChannels() }
+                    channels.forEach { ch ->
+                        val streamUrl = if (ch.streamUrl.isNotEmpty()) {
+                            ch.streamUrl.replace("127.0.0.1", host)
+                        } else {
+                            "http://$host:9191/stream/channel/${ch.serviceId}"
                         }
-                    } else {
-                        m3u.append("#EXTINF:-1 tvg-name=\"Satellite Proxy Stream\" group-title=\"Satellite DVB-S2\",Satellite Proxy Stream\n")
-                        m3u.append("http://$host:9191/play?url=http://satip-receiver/stream.ts\n\n")
+                        val cas = CasSystemDetector.detect(ch.caid)
+                        val casBadge = if (ch.caid > 0) " [${cas.shortCode}]" else " [FTA]"
+                        m3u.append("#EXTINF:-1 tvg-id=\"${ch.serviceId}\" tvg-name=\"${ch.name}\" group-title=\"${ch.satellite}\" tvg-type=\"tv\",${ch.name}$casBadge\n")
+                        m3u.append("$streamUrl\n\n")
                     }
 
                     val bytes = m3u.toString().toByteArray(Charsets.UTF_8)
                     exchange.responseHeaders.set("Content-Type", "audio/x-mpegurl; charset=UTF-8")
-                    exchange.responseHeaders.set("Content-Disposition", "attachment; filename=channels.m3u")
+                    exchange.responseHeaders.set("Content-Disposition", "inline; filename=channels.m3u")
                     exchange.sendResponseHeaders(200, bytes.size.toLong())
                     exchange.responseBody.write(bytes)
                     exchange.responseBody.close()
                 } catch (e: Exception) {
                     sendErrorResponse(exchange, 500, "Playlist error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private inner class WebEpgXmlHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val config = repository.getCurrentConfig()
+                    val channels = config.channels.ifEmpty { OscamConfig.defaultChannels() }
+                    val sb = StringBuilder()
+                    val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+                    val sdf = SimpleDateFormat("yyyyMMddHHmmss Z", Locale.US).apply {
+                        timeZone = TimeZone.getTimeZone("UTC")
+                    }
+
+                    cal.set(Calendar.HOUR_OF_DAY, 0)
+                    cal.set(Calendar.MINUTE, 0)
+                    cal.set(Calendar.SECOND, 0)
+                    val startTime = sdf.format(cal.time)
+                    cal.set(Calendar.HOUR_OF_DAY, 23)
+                    cal.set(Calendar.MINUTE, 59)
+                    cal.set(Calendar.SECOND, 59)
+                    val stopTime = sdf.format(cal.time)
+
+                    sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                    sb.append("<!DOCTYPE tv SYSTEM \"xmltv.dtd\">\n")
+                    sb.append("<tv generator-info-name=\"Android-OSCam-Bridge-TVHeadend\" generator-info-url=\"https://github.com/enekolizarraga/android-oscam-bridge\">\n")
+
+                    channels.forEach { ch ->
+                        val tvgId = "${ch.serviceId}"
+                        val safeName = ch.name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        val safeSat = ch.satellite.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        sb.append("  <channel id=\"$tvgId\">\n")
+                        sb.append("    <display-name>$safeName</display-name>\n")
+                        sb.append("    <display-name>$safeSat</display-name>\n")
+                        sb.append("  </channel>\n")
+                    }
+
+                    channels.forEach { ch ->
+                        val tvgId = "${ch.serviceId}"
+                        val safeName = ch.name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        val safeSat = ch.satellite.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        val cas = CasSystemDetector.detect(ch.caid)
+                        sb.append("  <programme start=\"$startTime\" stop=\"$stopTime\" channel=\"$tvgId\">\n")
+                        sb.append("    <title lang=\"es\">Emisión en Directo: $safeName</title>\n")
+                        sb.append("    <desc lang=\"es\">Canal satelital $safeName sintonizado en $safeSat (${ch.frequency} MHz ${ch.polarization}). Descodificación activa mediante ${cas.systemName} (${cas.shortCode}).</desc>\n")
+                        sb.append("    <category lang=\"es\">General</category>\n")
+                        sb.append("  </programme>\n")
+                    }
+
+                    sb.append("</tv>\n")
+
+                    val bytes = sb.toString().toByteArray(Charsets.UTF_8)
+                    exchange.responseHeaders.set("Content-Type", "application/xml; charset=UTF-8")
+                    exchange.responseHeaders.set("Content-Disposition", "inline; filename=epg.xml")
+                    exchange.sendResponseHeaders(200, bytes.size.toLong())
+                    exchange.responseBody.write(bytes)
+                    exchange.responseBody.close()
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, "EPG generation error: ${e.message}")
                 }
             }
         }
@@ -2689,7 +2752,7 @@ class OscamLocalConfigWebServer(
             <button class="tab-btn" onclick="showTab('tab-servers', this)">📡 Servers &amp; Providers (CCcam / OSCam / Newcamd)</button>
             <button class="tab-btn" onclick="showTab('tab-channels', this)">🛰️ Channels &amp; Transponders</button>
             <button class="tab-btn" onclick="showTab('tab-tuner', this)">⚙️ Tuner &amp; CAID Presets</button>
-            <button class="tab-btn" onclick="showTab('tab-player', this)">📺 Stream Proxy &amp; Player</button>
+            <button class="tab-btn" onclick="showTab('tab-player', this)">📺 TVHeadend (Modo Sin Root)</button>
             <button class="tab-btn" onclick="showTab('tab-diagnostics', this)">🔬 ECM Diagnostic Lab</button>
             <button class="tab-btn" onclick="showTab('tab-hardware', this)">💻 TV System &amp; Providers</button>
             <button class="tab-btn" onclick="showTab('tab-logs', this)">📜 Live Logcat</button>
@@ -3189,36 +3252,91 @@ class OscamLocalConfigWebServer(
             </div>
         </div>
 
-        <!-- TAB 5: External Stream Proxy & HTML5 Player -->
+        <!-- TAB 5: Servidor TVHeadend Embebido & Streaming (Modo Sin Root) -->
         <div class="tab-pane" id="tab-player">
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">HTTP Stream Descrambler Proxy (Port 9191)</div>
-                        <div class="panel-desc">Play encrypted recordings (.ts), SAT>IP feeds, or network IPTV streams outside the native tuner.</div>
+                        <div class="panel-title">📡 Servidor TVHeadend Embebido &amp; Streaming DVB-IPTV (Modo Sin Root)</div>
+                        <div class="panel-desc">Transmite todos tus canales descodificados con CCcam/OSCam directamente a TiviMate, Kodi o VLC sin necesidad de rootear la Smart TV.</div>
                     </div>
-                    <a href="/playlist.m3u" class="btn btn-purple" download="channels.m3u">⬇ Download M3U Playlist</a>
+                    <div style="display:flex; gap:8px;">
+                        <a href="/playlist.m3u" class="btn btn-purple" download="channels.m3u">⬇ Descargar M3U</a>
+                        <a href="/epg.xml" class="btn btn-primary" download="epg.xml">📅 Descargar EPG (XMLTV)</a>
+                    </div>
                 </div>
 
+                <!-- Banner Informativo Modo Sin Root -->
+                <div style="background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:10px; padding:16px; margin-bottom:18px;">
+                    <div style="font-weight:700; font-size:15px; color:#93C5FD; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+                        <span>💡</span> <span>¿Tu Smart TV no está rooteada? ¡No hay problema!</span>
+                    </div>
+                    <p style="font-size:13px; line-height:1.6; color:#E2E8F0; margin-bottom:10px;">
+                        La gran mayoría de televisores (Sony Bravia, Philips, TCL, Xiaomi, Chromecast con Google TV) no permiten rootear o tienen SELinux bloqueando los dispositivos del sintonizador interno.
+                        Para resolver esto, la app incluye un <strong>servidor de streaming TVHeadend completo</strong> que descifra los canales con CCcam/OSCam en tiempo real en espacio de usuario.
+                    </p>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px; margin-top:12px;">
+                        <div style="background:var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+                            <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">LISTA M3U IPTV (Canales Descodificados):</div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <code style="font-size:12px; flex:1; overflow-x:auto;">http://${realIp}:9191/playlist.m3u</code>
+                                <button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="copyToClipboard('http://${realIp}:9191/playlist.m3u')">Copiar</button>
+                            </div>
+                        </div>
+                        <div style="background:var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+                            <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">GUÍA EPG XMLTV (Programación):</div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <code style="font-size:12px; flex:1; overflow-x:auto;">http://${realIp}:9191/epg.xml</code>
+                                <button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="copyToClipboard('http://${realIp}:9191/epg.xml')">Copiar</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Guía Rápida de Configuración en Reproductores -->
+                <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:18px;">
+                    <div style="font-weight:700; font-size:14px; color:#FFF; margin-bottom:10px;">
+                        🚀 Cómo Ver los Canales en tu Smart TV o Red Doméstica
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; font-size:12px; line-height:1.5;">
+                        <div style="border-left:3px solid var(--primary); padding-left:12px;">
+                            <strong style="color:var(--primary); font-size:13px;">1. TiviMate IPTV Player (Recomendado)</strong>
+                            <p style="color:var(--text-muted); margin-top:4px;">Instala TiviMate en tu Android TV. Pulsa "Añadir Lista" &gt; "Lista M3U" e introduce <code>http://127.0.0.1:9191/playlist.m3u</code>. En Guía TV asigna <code>http://127.0.0.1:9191/epg.xml</code>.</p>
+                        </div>
+                        <div style="border-left:3px solid var(--accent); padding-left:12px;">
+                            <strong style="color:var(--accent); font-size:13px;">2. Kodi (PVR IPTV Simple Client)</strong>
+                            <p style="color:var(--text-muted); margin-top:4px;">En Kodi, activa el cliente PVR IPTV Simple Client. En la pestaña General pon la URL de la lista M3U y en la pestaña EPG pon la URL de la guía XMLTV.</p>
+                        </div>
+                        <div style="border-left:3px solid var(--success); padding-left:12px;">
+                            <strong style="color:var(--success); font-size:13px;">3. VLC / Móvil / Tablet / PC</strong>
+                            <p style="color:var(--text-muted); margin-top:4px;">Abre VLC en cualquier dispositivo conectado a tu WiFi. Menú "Medio" &gt; "Abrir ubicación de red" e introduce <code>http://${realIp}:9191/playlist.m3u</code>.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reproductor Web HTML5 de Diagnóstico -->
+                <div style="font-weight:700; font-size:13px; color:var(--text-muted); margin-bottom:6px; text-transform:uppercase;">
+                    Test en Vivo: Reproductor de Streaming
+                </div>
                 <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px;">
-                    <input type="text" id="player-stream-url" placeholder="Enter stream URL (e.g. http://satip-receiver/stream.ts)" value="http://127.0.0.1:9191/play?url=http://satip-receiver/stream.ts">
-                    <button type="button" class="btn btn-primary" onclick="loadStreamInPlayer()">Play Stream</button>
+                    <input type="text" id="player-stream-url" placeholder="URL de stream (ej: http://127.0.0.1:9191/stream/channel/30001)" value="http://127.0.0.1:9191/stream/channel/30001">
+                    <button type="button" class="btn btn-primary" onclick="loadStreamInPlayer()">Reproducir Stream</button>
                 </div>
 
                 <div class="player-box">
                     <video id="live-video-player" controls autoplay poster="">
-                        Your browser does not support HTML5 video streaming.
+                        Tu navegador no soporta streaming HTML5 directo.
                     </video>
                 </div>
 
-                <div style="margin-top:18px; display:grid; grid-template-columns:1fr 1fr; gap:14px;">
-                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:14px;">
-                        <div style="font-weight:700; font-size:12px; margin-bottom:4px; color:var(--text-muted);">SAT>IP PROXY ENDPOINT:</div>
-                        <code>http://&lt;TV_IP&gt;:9191/play?url=http://satip/stream.ts</code>
+                <div style="margin-top:16px; display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px;">
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:12px;">
+                        <div style="font-weight:700; font-size:11px; margin-bottom:4px; color:var(--text-muted);">STREAM DIRECTO POR CANAL / SERVICE ID:</div>
+                        <code>http://${realIp}:9191/stream/channel/{serviceId}</code>
                     </div>
-                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:14px;">
-                        <div style="font-weight:700; font-size:12px; margin-bottom:4px; color:var(--text-muted);">LOCAL ENCRYPTED RECORDING:</div>
-                        <code>http://127.0.0.1:9191/play?file=/sdcard/channel.ts</code>
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:12px;">
+                        <div style="font-weight:700; font-size:11px; margin-bottom:4px; color:var(--text-muted);">API TVHEADEND (COMPATIBILIDAD CLIENTES):</div>
+                        <code>http://${realIp}:9191/api/serverinfo</code>
                     </div>
                 </div>
             </div>
@@ -4581,6 +4699,35 @@ class OscamLocalConfigWebServer(
             banner.innerText = msg;
             banner.style.display = 'block';
             setTimeout(function() { banner.style.display = 'none'; }, 4500);
+        }
+
+        function copyToClipboard(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() {
+                    showAlert('Enlace copiado al portapapeles: ' + text, 'success');
+                }).catch(function() {
+                    copyFallback(text);
+                });
+            } else {
+                copyFallback(text);
+            }
+        }
+
+        function copyFallback(text) {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try {
+                document.execCommand('copy');
+                showAlert('Enlace copiado al portapapeles: ' + text, 'success');
+            } catch (err) {
+                showAlert('Copia el enlace manualmente: ' + text, 'warn');
+            }
+            document.body.removeChild(ta);
         }
 
         function updateLatencySparkline(latency) {
