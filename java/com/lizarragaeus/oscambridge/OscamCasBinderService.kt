@@ -57,6 +57,7 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
     private lateinit var repository: OscamConfigRepository
     private lateinit var connectivityManager: ConnectivityManager
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
 
     private var webServer: OscamLocalConfigWebServer? = null
     private var streamServer: StreamDescramblerServer? = null
@@ -82,21 +83,34 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(TAG, "OscamCasBinderService::onCreate initializing...")
+        Log.i(TAG, "OscamCasBinderService::onCreate initializing 24/7 background service...")
 
         repository = OscamConfigRepository(applicationContext)
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-        // DEVICE-SPECIFIC: WakeLock handling for Android TV chipsets (Amlogic/MediaTek)
+        // Permanent WakeLock and WifiLock to prevent Android TV deep sleep / network throttling
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "OscamCasBridge:ServiceWakeLock").apply {
                 setReferenceCounted(false)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not acquire WakeLock: ${e.message}")
+            Log.w(TAG, "Could not initialize WakeLock: ${e.message}")
         }
 
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+            wifiLock = wifiManager?.createWifiLock(
+                android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                "OscamCasBridge:WifiLock"
+            )?.apply {
+                setReferenceCounted(false)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not initialize WifiLock: ${e.message}")
+        }
+
+        acquireLocks()
         createNotificationChannel()
         registerNetworkCallback()
         OscamNativeBridge.nativeRegisterCallback(this)
@@ -196,6 +210,34 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         Log.i(TAG, "OscamCasSettingsActivity rebound to active background service.")
     }
 
+    private fun acquireLocks() {
+        try {
+            if (wakeLock?.isHeld != true) {
+                wakeLock?.acquire()
+                Log.d(TAG, "Acquired permanent WakeLock for 24/7 background service")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "WakeLock acquire error: ${e.message}")
+        }
+        try {
+            if (wifiLock?.isHeld != true) {
+                wifiLock?.acquire()
+                Log.d(TAG, "Acquired permanent WifiLock (HIGH_PERF) for 24/7 network connectivity")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "WifiLock acquire error: ${e.message}")
+        }
+    }
+
+    private fun releaseLocks() {
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (ignored: Exception) {}
+        try {
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (ignored: Exception) {}
+    }
+
     fun startBridge() {
         if (isServiceRunning) {
             Log.d(TAG, "Service is already running")
@@ -203,9 +245,9 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         }
 
         isServiceRunning = true
+        acquireLocks()
         val localIp = getLocalIpAddress()
         startForeground(NOTIFICATION_ID, buildNotification("Connecting to OSCam... Web UI: http://$localIp:8080"))
-        wakeLock?.acquire(10 * 60 * 1000L)
 
         serviceScope.launch {
             try {
@@ -272,9 +314,7 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
             stopSelf()
         }
 
-        if (wakeLock?.isHeld == true) {
-            wakeLock?.release()
-        }
+        releaseLocks()
     }
 
     fun restartBridge() {
@@ -484,6 +524,27 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         manager.notify(NOTIFICATION_ID, notification)
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.i(TAG, "onTaskRemoved: Android task cleared from recents. Keeping 24/7 background service alive.")
+        try {
+            val restartServiceIntent = Intent(applicationContext, OscamCasBinderService::class.java).apply {
+                action = ACTION_START
+            }
+            val restartPendingIntent = PendingIntent.getService(
+                applicationContext, 1, restartServiceIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val alarmService = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            alarmService?.set(
+                AlarmManager.RTC_WAKEUP,
+                System.currentTimeMillis() + 1000,
+                restartPendingIntent
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not set restart alarm onTaskRemoved: ${e.message}")
+        }
+    }
+
     override fun onDestroy() {
         Log.i(TAG, "OscamCasBinderService::onDestroy releasing resources")
         super.onDestroy()
@@ -492,9 +553,7 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         webServer?.stop()
         streamServer?.stop()
         OscamNativeBridge.nativeUnregisterCallback()
-        if (wakeLock?.isHeld == true) {
-            wakeLock?.release()
-        }
+        releaseLocks()
     }
 }
 

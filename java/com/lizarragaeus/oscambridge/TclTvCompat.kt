@@ -27,6 +27,10 @@ object TclTvCompat {
         XIAOMI,
         HISENSE,
         PANASONIC,
+        SAMSUNG,
+        LG,
+        VESTEL,
+        SHARP,
         GENERIC_ANDROID_TV
     }
 
@@ -37,9 +41,9 @@ object TclTvCompat {
         val isInstalled: Boolean
     )
 
-    // Known OEM Live TV broadcast player packages
-    private val KNOWN_OEM_PACKAGES = listOf(
-        // TCL Packages
+    // Known OEM Live TV broadcast player packages across all major Android TV manufacturers
+    val KNOWN_OEM_PACKAGES = listOf(
+        // TCL Packages (C645, C745, C845, C805, QM8, QM7, P635, P735, Thomson Android TV)
         Triple("com.tcl.tv", "TCL Live TV", TvBrand.TCL),
         Triple("com.tcl.live", "TCL Live Channels", TvBrand.TCL),
         Triple("com.tcl.ui.tuning", "TCL Channel Tuning UI", TvBrand.TCL),
@@ -50,20 +54,54 @@ object TclTvCompat {
         // Sony Bravia Packages
         Triple("com.sony.dtv.tvinput", "Sony Bravia TV Input", TvBrand.SONY),
         Triple("com.sony.dtv.broadcast", "Sony Broadcast Tuner", TvBrand.SONY),
+        Triple("com.sony.dtv.bravialifeview", "Sony Bravia LifeView", TvBrand.SONY),
+        Triple("com.sony.dtv.channellist", "Sony Channel List", TvBrand.SONY),
 
         // Philips / TP Vision Packages
         Triple("org.droidtv.channels", "Philips Channel Manager", TvBrand.PHILIPS),
         Triple("org.droidtv.playtv", "Philips Play TV", TvBrand.PHILIPS),
+        Triple("org.droidtv.settings", "Philips TV Settings", TvBrand.PHILIPS),
+        Triple("org.droidtv.tv", "Philips TV Service", TvBrand.PHILIPS),
 
-        // Xiaomi / Mi TV Packages
+        // Xiaomi / Redmi / Mi TV Packages
         Triple("com.xiaomi.mitv.tvinput", "Xiaomi PatchWall TV Input", TvBrand.XIAOMI),
         Triple("com.xiaomi.mitv.livetv", "Xiaomi Live TV", TvBrand.XIAOMI),
+        Triple("com.mitv.tvinput", "Mi TV Input Manager", TvBrand.XIAOMI),
 
-        // Hisense Packages
+        // Hisense VIDAA / Android TV Packages
         Triple("com.hisense.tv.input", "Hisense Live TV Input", TvBrand.HISENSE),
+        Triple("com.hisense.tv.channel", "Hisense Channel Manager", TvBrand.HISENSE),
+        Triple("com.jamdeo.tv.livetv", "Hisense Jamdeo Live TV", TvBrand.HISENSE),
+
+        // Samsung Android / Tizen-Bridge Packages
+        Triple("com.samsung.tv.input", "Samsung TV Input", TvBrand.SAMSUNG),
+        Triple("com.samsung.android.livetv", "Samsung Live TV", TvBrand.SAMSUNG),
+        Triple("com.samsung.tv", "Samsung TV Service", TvBrand.SAMSUNG),
+
+        // LG Android Companion / TV Packages
+        Triple("com.lge.tv.input", "LG TV Input", TvBrand.LG),
+        Triple("com.lge.livetv", "LG Live TV", TvBrand.LG),
+        Triple("com.lge.tv", "LG TV Framework", TvBrand.LG),
+
+        // Vestel / Toshiba / Hitachi / Telefunken / JVC Packages
+        Triple("com.vestel.tv", "Vestel Live TV", TvBrand.VESTEL),
+        Triple("com.vestel.live", "Vestel Channel Tuner", TvBrand.VESTEL),
+        Triple("com.toshiba.tv", "Toshiba TV Tuner", TvBrand.VESTEL),
+        Triple("com.toshiba.broadcast", "Toshiba Broadcast Manager", TvBrand.VESTEL),
+
+        // Sharp Aquos Android TV Packages
+        Triple("jp.co.sharp.android.tv", "Sharp Aquos Live TV", TvBrand.SHARP),
+        Triple("com.sharp.tv.input", "Sharp TV Input", TvBrand.SHARP),
+        Triple("com.sharp.broadcast", "Sharp Broadcast Service", TvBrand.SHARP),
+
+        // Panasonic Packages
+        Triple("com.panasonic.avc.dmp.tvinput", "Panasonic DTV Input", TvBrand.PANASONIC),
+        Triple("com.panasonic.tv.broadcast", "Panasonic Broadcast Tuner", TvBrand.PANASONIC),
+        Triple("com.panasonic.dtv", "Panasonic DTV Engine", TvBrand.PANASONIC),
 
         // Google / Android Open Source Reference
-        Triple("com.google.android.tv", "Google Live Channels", TvBrand.GENERIC_ANDROID_TV)
+        Triple("com.google.android.tv", "Google Live Channels", TvBrand.GENERIC_ANDROID_TV),
+        Triple("com.android.tv", "Android Open TV Framework", TvBrand.GENERIC_ANDROID_TV)
     )
 
     /**
@@ -72,14 +110,21 @@ object TclTvCompat {
     fun detectTvBrand(): TvBrand {
         val manufacturer = Build.MANUFACTURER.uppercase()
         val brand = Build.BRAND.uppercase()
+        val product = Build.PRODUCT.uppercase()
+        val sysBrand = getSystemProperty("ro.product.brand").uppercase()
+        val sysManuf = getSystemProperty("ro.product.manufacturer").uppercase()
 
         return when {
-            manufacturer.contains("TCL") || brand.contains("TCL") || getSystemProperty("ro.product.brand").contains("tcl", ignoreCase = true) -> TvBrand.TCL
-            manufacturer.contains("SONY") || brand.contains("SONY") -> TvBrand.SONY
-            manufacturer.contains("TPV") || manufacturer.contains("PHILIPS") || brand.contains("PHILIPS") -> TvBrand.PHILIPS
-            manufacturer.contains("XIAOMI") || brand.contains("XIAOMI") || brand.contains("REDMI") -> TvBrand.XIAOMI
-            manufacturer.contains("HISENSE") || brand.contains("HISENSE") -> TvBrand.HISENSE
+            manufacturer.contains("TCL") || brand.contains("TCL") || sysBrand.contains("TCL") || sysManuf.contains("TCL") || brand.contains("THOMSON") -> TvBrand.TCL
+            manufacturer.contains("SONY") || brand.contains("SONY") || sysBrand.contains("SONY") -> TvBrand.SONY
+            manufacturer.contains("TPV") || manufacturer.contains("PHILIPS") || brand.contains("PHILIPS") || sysBrand.contains("PHILIPS") -> TvBrand.PHILIPS
+            manufacturer.contains("XIAOMI") || brand.contains("XIAOMI") || brand.contains("REDMI") || brand.contains("POCO") -> TvBrand.XIAOMI
+            manufacturer.contains("HISENSE") || brand.contains("HISENSE") || sysBrand.contains("HISENSE") -> TvBrand.HISENSE
             manufacturer.contains("PANASONIC") || brand.contains("PANASONIC") -> TvBrand.PANASONIC
+            manufacturer.contains("SAMSUNG") || brand.contains("SAMSUNG") -> TvBrand.SAMSUNG
+            manufacturer.contains("LG") || brand.contains("LG") || manufacturer.contains("LGE") -> TvBrand.LG
+            manufacturer.contains("VESTEL") || brand.contains("VESTEL") || brand.contains("TOSHIBA") || manufacturer.contains("TOSHIBA") || brand.contains("HITACHI") || brand.contains("TELEFUNKEN") || brand.contains("JVC") -> TvBrand.VESTEL
+            manufacturer.contains("SHARP") || brand.contains("SHARP") || product.contains("AQUOS") -> TvBrand.SHARP
             else -> TvBrand.GENERIC_ANDROID_TV
         }
     }
@@ -122,27 +167,39 @@ object TclTvCompat {
         return results
     }
 
+    data class LastTuningInfo(
+        var serviceId: Int = -1,
+        var frequencyHz: Long = 0L,
+        var uri: String = "",
+        var timestamp: Long = 0L
+    )
+
+    var lastTuningEvent: LastTuningInfo = LastTuningInfo()
+
     /**
      * Registers a broadcast receiver listening for TCL-specific tuning and channel change actions.
      * Allows the bridge to intercept tuning events even when using the closed-source TCL Live TV app.
      */
     fun registerTclChannelListener(context: Context, onChannelChanged: (channelInfo: String) -> Unit): BroadcastReceiver? {
-        if (detectTvBrand() != TvBrand.TCL) {
-            return null
-        }
-
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: Intent?) {
                 if (intent == null) return
                 val action = intent.action ?: return
-                Log.i(TAG, "TCL Broadcast Intent intercepted: $action")
+                Log.i(TAG, "TV Broadcast Intent intercepted: $action")
 
                 val channelUri = intent.dataString ?: intent.getStringExtra("channel_uri") ?: ""
                 val serviceId = intent.getIntExtra("service_id", -1)
                 val frequency = intent.getLongExtra("frequency", 0L)
 
+                lastTuningEvent = LastTuningInfo(
+                    serviceId = serviceId,
+                    frequencyHz = frequency,
+                    uri = channelUri,
+                    timestamp = System.currentTimeMillis()
+                )
+
                 val details = "Action=$action, URI=$channelUri, SID=$serviceId, Freq=$frequency"
-                Log.i(TAG, "TCL Live TV Channel change: $details")
+                Log.i(TAG, "TV Channel change event: $details")
                 onChannelChanged(details)
             }
         }
