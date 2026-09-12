@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Configuración de registro de CA_system_id para el plugin OSCam CAS de Android TV.
+    Ubicación en el dispositivo: /vendor/etc/cas_config.xml o /vendor/etc/cas/cas_config.xml
+-->
+<MediaCasPlugins>
+    <Plugin name="OscamCasPlugin" version="1.0">
+        <!-- Irdeto / Tarjetas DVB-S/C -->
+        <CASystemID>0x0604</CASystemID>
+        <CASystemID>0x0602</CASystemID>
+        <!-- Nagravision (TDT / Satélite DVB-S2) -->
+        <CASystemID>0x1801</CASystemID>
+        <CASystemID>0x1810</CASystemID>
+        <CASystemID>0x1830</CASystemID>
+        <CASystemID>0x1843</CASystemID>
+        <CASystemID>0x1850</CASystemID>
+        <!-- Viaccess (Fransat / BIS / SRG DVB-S2) -->
+        <CASystemID>0x0500</CASystemID>
+        <!-- Seca / Mediaguard -->
+        <CASystemID>0x0100</CASystemID>
+        <!-- Conax -->
+        <CASystemID>0x0B00</CASystemID>
+        <!-- NDS VideoGuard Satélite -->
+        <CASystemID>0x09CD</CASystemID>
+        <CASystemID>0x098C</CASystemID>
+    </Plugin>
+</MediaCasPlugins>

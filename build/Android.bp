@@ -1,0 +1,154 @@
+// build/Android.bp
+//
+// Soong build definition for Android OSCam CAS Bridge.
+// Builds the native AIDL HAL service daemon, the chipset abstraction libraries,
+// and the JNI bridge library for Android 12+ (API 31+).
+//
+// Author: android-oscam-bridge (Phase 5)
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// -----------------------------------------------------------------------------
+// 1. Dvbapi Protocol & Client Static Library
+// -----------------------------------------------------------------------------
+cc_library_static {
+    name: "liboscam_bridge",
+    vendor: true,
+    srcs: [
+        "bridge/BridgeLogger.cpp",
+        "bridge/DvbapiProtocol.cpp",
+        "bridge/DvbapiClient.cpp",
+        "bridge/SatellitePmtParser.cpp",
+        "bridge/SoftwareDescrambler.cpp",
+    ],
+    local_include_dirs: [
+        "bridge",
+        "bridge/include",
+    ],
+    export_include_dirs: [
+        "bridge",
+        "bridge/include",
+    ],
+    shared_libs: [
+        "liblog",
+        "libcutils",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-Wno-unused-parameter",
+        "-std=c++20",
+    ],
+}
+
+// -----------------------------------------------------------------------------
+// 2. Chipset Hardware Abstraction Layer Static Library
+// -----------------------------------------------------------------------------
+cc_library_static {
+    name: "liboscam_chipset",
+    vendor: true,
+    srcs: [
+        "chipset/AmlogicAdapter.cpp",
+        "chipset/MediaTekAdapter.cpp",
+        "chipset/RealtekAdapter.cpp",
+        "chipset/BroadcomAdapter.cpp",
+        "chipset/SynapticsAdapter.cpp",
+        "chipset/NovatekAdapter.cpp",
+        "chipset/ChipsetDetector.cpp",
+    ],
+    local_include_dirs: [
+        "chipset",
+        "chipset/include",
+        "bridge",
+        "bridge/include",
+    ],
+    export_include_dirs: [
+        "chipset",
+        "chipset/include",
+    ],
+    static_libs: [
+        "liboscam_bridge",
+    ],
+    shared_libs: [
+        "liblog",
+        "libcutils",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-std=c++20",
+    ],
+}
+
+// -----------------------------------------------------------------------------
+// 3. Android AIDL CAS HAL Service Binary
+// -----------------------------------------------------------------------------
+cc_binary {
+    name: "vendor.oscam.cas-service",
+    vendor: true,
+    relative_install_path: "hw",
+    init_rc: ["vendor.oscam.cas-service.rc"],
+    vintf_fragments: ["hal/manifest/android.hardware.cas.xml"],
+    srcs: [
+        "hal/native/OscamCasPlugin.cpp",
+        "hal/native/OscamCasService.cpp",
+        "hal/native/ConfigWatcher.cpp",
+        "hal/native/main.cpp",
+    ],
+    local_include_dirs: [
+        "hal/native",
+        "hal/native/include",
+        "chipset/include",
+        "bridge/include",
+    ],
+    static_libs: [
+        "liboscam_chipset",
+        "liboscam_bridge",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "liblog",
+        "libcutils",
+        "android.hardware.cas-V1-ndk",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-std=c++20",
+    ],
+}
+
+// -----------------------------------------------------------------------------
+// 4. JNI Shared Library for Companion Settings & Proxy App
+// -----------------------------------------------------------------------------
+cc_library_shared {
+    name: "liboscam_jni",
+    srcs: [
+        "jni/com_oscam_cas_OscamCasPlugin.cpp",
+    ],
+    local_include_dirs: [
+        "jni",
+        "bridge/include",
+        "hal/native/include",
+        "chipset/include",
+    ],
+    static_libs: [
+        "liboscam_bridge",
+        "liboscam_chipset",
+    ],
+    shared_libs: [
+        "liblog",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-std=c++20",
+    ],
+}
+

@@ -1,0 +1,8 @@
+# build/vendor.oscam.cas-service.rc
+service vendor.oscam.cas-service /vendor/bin/hw/vendor.oscam.cas-service
+    class hal
+    user media
+    group mediadrm drmrpc system
+    capabilities NET_RAW
+    ioprio rt 4
+

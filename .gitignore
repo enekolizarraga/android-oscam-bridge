@@ -1,0 +1,26 @@
+# Build output directories and binaries
+build_android/
+build_host/
+build_out/
+out/
+bin/
+cmake-build-*/
+*.so
+*.a
+*.apk
+*.o
+*.obj
+
+# Gradle & Android
+.gradle/
+local.properties
+.cxx/
+
+# IDE files
+.idea/
+*.iml
+*.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

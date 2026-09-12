@@ -1,0 +1,30 @@
+# hal/sepolicy/oscamcas.te
+#
+# SELinux policy for vendor.oscam.cas-service daemon on Android 12+ (API 31+).
+
+type vendor_oscam_cas_service, domain;
+type vendor_oscam_cas_service_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(vendor_oscam_cas_service)
+
+# HAL implementation permissions
+hal_server_domain(vendor_oscam_cas_service, hal_cas)
+
+# Network capabilities for connecting to OSCam dvbapi over TCP
+net_domain(vendor_oscam_cas_service)
+allow vendor_oscam_cas_service self:tcp_socket create_stream_socket_perms;
+allow vendor_oscam_cas_service port_type:tcp_socket name_connect;
+allow vendor_oscam_cas_service node_type:tcp_socket node_bind;
+
+# Shared vendor config directory access (/data/vendor/oscam)
+allow vendor_oscam_cas_service vendor_data_file:dir create_dir_perms;
+allow vendor_oscam_cas_service vendor_data_file:file create_file_perms;
+
+# Access to hardware descrambler / demux device nodes
+allow vendor_oscam_cas_service video_device:chr_file rw_file_perms;
+allow vendor_oscam_cas_service dvb_device:chr_file rw_file_perms;
+
+# IPC Binder communication with servicemanager and Tuner HAL
+vndbinder_use(vendor_oscam_cas_service)
+allow vendor_oscam_cas_service hal_tuner_default:binder { call transfer };
+

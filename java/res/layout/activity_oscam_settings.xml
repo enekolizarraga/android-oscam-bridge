@@ -1,0 +1,261 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121212"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
+
+        <!-- Title and Banner -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Android TV ↔ OSCam CAS Bridge"
+            android:textColor="#FFFFFF"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="6dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DVB-S/S2/S2X, DVB-T/T2, DVB-C Tuner Descrambler &amp; Stream Proxy"
+            android:textColor="#B0BEC5"
+            android:textSize="14sp"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Remote Web Configuration Banner -->
+        <TextView
+            android:id="@+id/tv_web_url"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="💡 Configure from phone or PC browser: http://...:8080"
+            android:textColor="#80D8FF"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:background="#1A237E"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Status Badge -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:id="@+id/tv_status_badge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="DISCONNECTED"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:paddingStart="20dp"
+                android:paddingEnd="20dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:background="#455A64" />
+
+            <ProgressBar
+                android:id="@+id/progress_test"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginStart="16dp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Live Metrics -->
+        <TextView
+            android:id="@+id/tv_stats_info"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Resolved CWs: 0 | ECMs Sent: 0 | Reconnects: 0"
+            android:textColor="#81C784"
+            android:textSize="14sp"
+            android:layout_marginBottom="6dp" />
+
+        <!-- Error Details -->
+        <TextView
+            android:id="@+id/tv_error_details"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Error:"
+            android:textColor="#EF5350"
+            android:textSize="13sp"
+            android:visibility="gone"
+            android:gravity="center"
+            android:layout_marginBottom="14dp" />
+
+        <!-- Settings Form -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:maxWidth="720dp"
+            android:background="#1E1E1E"
+            android:padding="20dp">
+
+            <!-- Tuner Delivery System Mode (Default: DVB-S2) -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Broadcast Delivery System:"
+                android:textColor="#CFD8DC"
+                android:textSize="14sp" />
+            <Spinner
+                android:id="@+id/sp_delivery_system"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#263238"
+                android:padding="8dp"
+                android:focusable="true"
+                android:nextFocusDown="@+id/et_host"
+                android:layout_marginBottom="12dp" />
+
+            <!-- Server Host IP -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OSCam Server Host / IP Address:"
+                android:textColor="#CFD8DC"
+                android:textSize="14sp" />
+            <EditText
+                android:id="@+id/et_host"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="e.g. 192.168.1.100"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#546E7A"
+                android:inputType="textUri"
+                android:focusable="true"
+                android:nextFocusDown="@+id/et_port"
+                android:layout_marginBottom="12dp" />
+
+            <!-- Dvbapi Port -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="DVBAPI Port (oscam.conf):"
+                android:textColor="#CFD8DC"
+                android:textSize="14sp" />
+            <EditText
+                android:id="@+id/et_port"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="9000"
+                android:text="9000"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#546E7A"
+                android:inputType="number"
+                android:focusable="true"
+                android:nextFocusDown="@+id/et_user"
+                android:layout_marginBottom="12dp" />
+
+            <!-- Dvbapi User -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="DVBAPI User (oscam.user):"
+                android:textColor="#CFD8DC"
+                android:textSize="14sp" />
+            <EditText
+                android:id="@+id/et_user"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="android_tv"
+                android:text="android_tv"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#546E7A"
+                android:focusable="true"
+                android:nextFocusDown="@+id/et_caids"
+                android:layout_marginBottom="12dp" />
+
+            <!-- Supported CAIDs -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Handled CA_system_ids (Hex CSV):"
+                android:textColor="#CFD8DC"
+                android:textSize="14sp" />
+            <EditText
+                android:id="@+id/et_caids"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="0x1810, 0x1830, 0x0100, 0x0500"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#546E7A"
+                android:focusable="true"
+                android:nextFocusDown="@+id/cb_autostart"
+                android:layout_marginBottom="14dp" />
+
+            <!-- Autostart CheckBox -->
+            <CheckBox
+                android:id="@+id/cb_autostart"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Auto-start bridge service on TV boot"
+                android:textColor="#ECEFF1"
+                android:checked="true"
+                android:focusable="true"
+                android:nextFocusDown="@+id/btn_test_connection"
+                android:layout_marginBottom="18dp" />
+
+            <!-- Action Buttons -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+
+                <Button
+                    android:id="@+id/btn_test_connection"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Test Connection"
+                    android:backgroundTint="#0288D1"
+                    android:textColor="#FFFFFF"
+                    android:focusable="true"
+                    android:nextFocusRight="@+id/btn_save_connect"
+                    android:nextFocusDown="@+id/btn_stop_service"
+                    android:layout_marginEnd="8dp" />
+
+                <Button
+                    android:id="@+id/btn_save_connect"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Save &amp; Apply"
+                    android:backgroundTint="#2E7D32"
+                    android:textColor="#FFFFFF"
+                    android:focusable="true"
+                    android:nextFocusLeft="@+id/btn_test_connection"
+                    android:nextFocusDown="@+id/btn_stop_service"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_stop_service"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Stop Service"
+                android:backgroundTint="#D32F2F"
+                android:textColor="#FFFFFF"
+                android:focusable="true"
+                android:layout_marginTop="12dp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

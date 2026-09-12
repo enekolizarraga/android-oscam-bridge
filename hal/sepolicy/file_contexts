@@ -1,0 +1,4 @@
+# hal/sepolicy/file_contexts
+/vendor/bin/hw/vendor\.oscam\.cas-service    u:object_r:vendor_oscam_cas_service_exec:s0
+/data/vendor/oscam(/.*)?                    u:object_r:vendor_data_file:s0
+

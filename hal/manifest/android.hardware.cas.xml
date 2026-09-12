@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Entrada VINTF Manifest para Android 12+ (AIDL HAL).
+    Ubicación en el dispositivo: /vendor/etc/vintf/manifest/vendor.oscam.cas.xml
+-->
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>vendor.oscam.cas</name>
+        <version>1</version>
+        <interface>
+            <name>IOscamCasService</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+</manifest>
