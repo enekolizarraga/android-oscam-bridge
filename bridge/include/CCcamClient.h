@@ -60,12 +60,18 @@ struct CCcamCallbacks {
 };
 
 /**
- * @brief Self-contained RC4 stream cipher state.
+ * @brief Self-contained CCcam proprietary stream cipher block (cc_crypt).
  */
-struct Rc4Key {
-    uint8_t state[256];
-    uint8_t x{0};
-    uint8_t y{0};
+struct CcCryptBlock {
+    uint8_t keytable[256]{0};
+    uint8_t state{0};
+    uint8_t counter{0};
+    uint8_t sum{0};
+};
+
+enum class CcCryptMode : uint8_t {
+    Decrypt = 0,
+    Encrypt = 1
 };
 
 /**
@@ -107,9 +113,11 @@ public:
         std::string& outError
     );
 
-    // Cryptographic utility helpers (publicly exposed for testing)
-    static void rc4Init(Rc4Key* key, const uint8_t* keyData, size_t keyLen);
-    static void rc4Crypt(Rc4Key* key, const uint8_t* in, uint8_t* out, size_t len);
+    // Cryptographic utility helpers (publicly exposed for testing & compliance)
+    static void ccInitCrypt(CcCryptBlock* block, const uint8_t* key, size_t keyLen);
+    static void ccCrypt(CcCryptBlock* block, uint8_t* data, size_t len, CcCryptMode mode);
+    static void ccXor(uint8_t* buf);
+    static void ccCwCrypt(uint8_t* cws, uint64_t nodeId, uint32_t cardId);
     static void sha1(const uint8_t* data, size_t length, uint8_t outDigest[20]);
 
 private:
@@ -117,6 +125,8 @@ private:
     bool connectAndLogin(int& socketFd);
     bool readFull(int socketFd, uint8_t* buffer, size_t count);
     bool writeFull(int socketFd, const uint8_t* buffer, size_t count);
+    bool sendMsg(int socketFd, uint8_t cmd, const uint8_t* payload, size_t payloadLen);
+    bool recvMsg(int socketFd, uint8_t& outCmd, std::vector<uint8_t>& outPayload);
 
     CCcamConfig config_;
     CCcamCallbacks callbacks_;
@@ -128,8 +138,8 @@ private:
     mutable std::mutex socketMutex_;
     int activeSocketFd_{-1};
 
-    Rc4Key sendRc4_;
-    Rc4Key recvRc4_;
+    CcCryptBlock sendBlock_;
+    CcCryptBlock recvBlock_;
     uint8_t serverNodeId_[8]{0};
     uint8_t clientNodeId_[8]{0};
 };

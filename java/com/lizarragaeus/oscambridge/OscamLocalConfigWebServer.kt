@@ -973,8 +973,7 @@ class OscamLocalConfigWebServer(
             }
         }
 
-        // ── CCcam SHA1+RC4 handshake ───────────────────────────────────────
-        // Mirrors CCcamClient::connectAndLogin() in CCcamClient.cpp exactly
+        // ── CCcam Handshake (v2.x / OSCam module-cccam.c specification) ─────
         private fun testCCcam(host: String, port: Int, user: String, password: String, timeoutMs: Int): Pair<Boolean, String> {
             return try {
                 val sock = Socket()
@@ -983,38 +982,88 @@ class OscamLocalConfigWebServer(
                 val ins = sock.getInputStream()
                 val outs = sock.getOutputStream()
 
-                // Step 1: read 16-byte server random IV
+                // Step 1: Read 16-byte server random IV/seed
                 val srvRandom = ByteArray(16)
                 var read = 0
-                while (read < 16) { val r = ins.read(srvRandom, read, 16 - read); if (r < 0) throw Exception("server closed during handshake"); read += r }
+                while (read < 16) {
+                    val r = ins.read(srvRandom, read, 16 - read)
+                    if (r < 0) throw Exception("Server closed connection during seed handshake")
+                    read += r
+                }
 
-                // Step 2: SHA1(srvRandom) → init RC4 send/recv key streams
-                val hash = sha1(srvRandom)
-                val sendKey = IntArray(256); val recvKey = IntArray(256)
-                rc4Init(sendKey, hash); rc4Init(recvKey, hash)
+                // Step 2: XOR with CCcam magic
+                val data = srvRandom.copyOf(16)
+                ccXor(data)
 
-                // Step 3: encrypt srvRandom and send as challenge response
-                outs.write(rc4Crypt(sendKey, srvRandom))
+                // Step 3: SHA1(data) -> hash (20 bytes)
+                val hash = sha1(data)
 
-                // Step 4: build and send login packet (34 bytes)
-                // [user(20)] + [nodeId(8)] + [version(6)]
-                val loginBuf = ByteArray(34)
-                val userBytes = user.toByteArray(Charsets.UTF_8)
-                System.arraycopy(userBytes, 0, loginBuf, 0, minOf(userBytes.size, 20))
-                val nodeId = ByteArray(8); java.util.Random().nextBytes(nodeId)
-                System.arraycopy(nodeId, 0, loginBuf, 20, 8)
-                val ver = "2.3.0\u0000".toByteArray(Charsets.UTF_8)
-                System.arraycopy(ver, 0, loginBuf, 28, minOf(ver.size, 6))
-                outs.write(rc4Crypt(sendKey, loginBuf))
+                // Step 4: Initialize cryptographic states
+                val recvBlock = CcCryptBlock()
+                val sendBlock = CcCryptBlock()
+
+                ccInitCrypt(recvBlock, hash)
+                ccCrypt(recvBlock, data, false) // Decrypt data
+
+                ccInitCrypt(sendBlock, data)
+                ccCrypt(sendBlock, hash, false) // Decrypt hash
+
+                // Step 5: Send encrypted hash (20 bytes)
+                val sendHash = hash.copyOf(20)
+                outs.write(ccCrypt(sendBlock, sendHash, true))
+
+                // Step 6: Send username (20 bytes, 0-padded) encrypted
+                val userBuf = ByteArray(20)
+                val uBytes = user.toByteArray(Charsets.UTF_8)
+                System.arraycopy(uBytes, 0, userBuf, 0, minOf(uBytes.size, 20))
+                outs.write(ccCrypt(sendBlock, userBuf, true))
+
+                // Step 7: Advance sendBlock cipher state with password & send "CCcam\0" challenge
+                val passBytes = password.toByteArray(Charsets.UTF_8)
+                ccCrypt(sendBlock, passBytes, true)
+
+                val magic = "CCcam\u0000".toByteArray(Charsets.US_ASCII)
+                outs.write(ccCrypt(sendBlock, magic, true))
                 outs.flush()
 
-                // Step 5: read 8-byte server ACK (server node ID encrypted with recvKey)
-                val srvAck = ByteArray(8)
+                // Step 8: Read 20-byte server password ACK
+                val srvAck = ByteArray(20)
                 read = 0
-                while (read < 8) { val r = ins.read(srvAck, read, 8 - read); if (r < 0) throw Exception("auth rejected — no server ACK (bad credentials?)"); read += r }
+                while (read < 20) {
+                    val r = ins.read(srvAck, read, 20 - read)
+                    if (r < 0) throw Exception("Authentication rejected — server closed connection (bad credentials)")
+                    read += r
+                }
+
+                val decAck = ccCrypt(recvBlock, srvAck, false)
+                val ackStr = String(decAck, 0, minOf(5, decAck.size), Charsets.US_ASCII)
+                if (!ackStr.startsWith("CCcam")) {
+                    sock.close()
+                    return Pair(false, "CCcam authentication failed (invalid username or password)")
+                }
+
+                // Step 9: Send client metadata (MSG_CLI_DATA = 0x00, size = 93)
+                val cliData = ByteArray(93)
+                System.arraycopy(uBytes, 0, cliData, 0, minOf(uBytes.size, 20))
+                val nodeId = ByteArray(8).also { java.util.Random().nextBytes(it) }
+                System.arraycopy(nodeId, 0, cliData, 20, 8)
+                cliData[28] = 0 // want_emu = 0
+                val ver = "2.3.0".toByteArray(Charsets.US_ASCII)
+                System.arraycopy(ver, 0, cliData, 29, minOf(ver.size, 32))
+                val build = "3367".toByteArray(Charsets.US_ASCII)
+                System.arraycopy(build, 0, cliData, 61, minOf(build.size, 32))
+
+                val netMsg = ByteArray(4 + 93)
+                netMsg[0] = 0 // flag
+                netMsg[1] = 0 // MSG_CLI_DATA
+                netMsg[2] = 0
+                netMsg[3] = 93.toByte()
+                System.arraycopy(cliData, 0, netMsg, 4, 93)
+                outs.write(ccCrypt(sendBlock, netMsg, true))
+                outs.flush()
 
                 sock.close()
-                Pair(true, "CCcam login OK (SHA1+RC4 v2.3.0)")
+                Pair(true, "CCcam login OK (Authenticated as '$user')")
             } catch (e: Exception) {
                 Pair(false, "CCcam: ${e.message ?: "auth failed"}")
             }
@@ -1114,26 +1163,57 @@ class OscamLocalConfigWebServer(
         private fun sha1(data: ByteArray): ByteArray =
             java.security.MessageDigest.getInstance("SHA-1").digest(data)
 
-        // ── RC4 helpers — mirrors CCcamClient rc4Init/rc4Crypt exactly ─────
-        private fun rc4Init(state: IntArray, key: ByteArray) {
-            for (i in 0..255) state[i] = i
+        // ── CCcam proprietary stream cipher helpers (cc_crypt) ───────────
+        class CcCryptBlock(
+            val keytable: IntArray = IntArray(256),
+            var state: Int = 0,
+            var counter: Int = 0,
+            var sum: Int = 0
+        )
+
+        private fun ccInitCrypt(block: CcCryptBlock, key: ByteArray) {
+            for (i in 0..255) block.keytable[i] = i
             var j = 0
             for (i in 0..255) {
-                j = (j + state[i] + (key[i % key.size].toInt() and 0xFF)) and 0xFF
-                val tmp = state[i]; state[i] = state[j]; state[j] = tmp
+                j = (j + (key[i % key.size].toInt() and 0xFF) + block.keytable[i]) and 0xFF
+                val tmp = block.keytable[i]
+                block.keytable[i] = block.keytable[j]
+                block.keytable[j] = tmp
             }
+            block.state = key[0].toInt() and 0xFF
+            block.counter = 0
+            block.sum = 0
         }
 
-        private fun rc4Crypt(state: IntArray, input: ByteArray): ByteArray {
-            val output = ByteArray(input.size)
-            var x = 0; var y = 0
-            for (i in input.indices) {
-                x = (x + 1) and 0xFF
-                y = (y + state[x]) and 0xFF
-                val tmp = state[x]; state[x] = state[y]; state[y] = tmp
-                output[i] = (input[i].toInt() xor state[(state[x] + state[y]) and 0xFF]).toByte()
+        private fun ccCrypt(block: CcCryptBlock, data: ByteArray, encrypt: Boolean): ByteArray {
+            val out = ByteArray(data.size)
+            for (i in data.indices) {
+                block.counter = (block.counter + 1) and 0xFF
+                block.sum = (block.sum + block.keytable[block.counter]) and 0xFF
+                val tmp = block.keytable[block.counter]
+                block.keytable[block.counter] = block.keytable[block.sum]
+                block.keytable[block.sum] = tmp
+
+                var z = data[i].toInt() and 0xFF
+                var valByte = z xor block.keytable[(block.keytable[block.counter] + block.keytable[block.sum]) and 0xFF]
+                valByte = valByte xor block.state
+                if (!encrypt) {
+                    z = valByte and 0xFF
+                }
+                block.state = (block.state xor z) and 0xFF
+                out[i] = valByte.toByte()
             }
-            return output
+            return out
+        }
+
+        private fun ccXor(buf: ByteArray) {
+            val cccamMagic = "CCcam".toByteArray(Charsets.US_ASCII)
+            for (i in 0..7) {
+                buf[8 + i] = ((i * (buf[i].toInt() and 0xFF)) and 0xFF).toByte()
+                if (i <= 5) {
+                    buf[i] = (buf[i].toInt() xor cccamMagic[i].toInt()).toByte()
+                }
+            }
         }
     }
 
@@ -3598,7 +3678,10 @@ class OscamLocalConfigWebServer(
 
         function toggleServerFields(idx) {
             var card = document.getElementById('srv-box-' + idx);
-            var proto = card.querySelector('.srv-proto').value;
+            if (!card) return;
+            var protoEl = card.querySelector('.srv-proto');
+            if (!protoEl) return;
+            var proto = protoEl.value;
             var portInput = card.querySelector('.srv-port');
             var hostInput = card.querySelector('.srv-host');
             var hostLabel = card.querySelector('.srv-host-label');
@@ -3613,18 +3696,19 @@ class OscamLocalConfigWebServer(
             }
 
             if (proto === 'DVBAPI_UNIX') {
-                portInput.value = 0;
-                portInput.disabled = true;
-                if (hostInput.value === '192.168.1.100' || hostInput.value === '127.0.0.1') hostInput.value = '/tmp/camd.socket';
+                if (portInput) { portInput.value = 0; portInput.disabled = true; }
+                if (hostInput && (hostInput.value === '192.168.1.100' || hostInput.value === '127.0.0.1')) hostInput.value = '/tmp/camd.socket';
                 if (hostLabel) hostLabel.innerText = 'Socket Path';
                 if (passDiv) passDiv.style.display = 'none';
                 if (desDiv) desDiv.style.display = 'none';
                 if (credsRow) credsRow.style.gridTemplateColumns = '1fr';
             } else {
-                portInput.disabled = false;
+                if (portInput) {
+                    portInput.disabled = false;
+                    portInput.value = getDefaultPortForProto(proto);
+                }
                 if (hostLabel) hostLabel.innerText = 'Host / IP Address';
-                if (hostInput.value.indexOf('/') >= 0) hostInput.value = '192.168.1.100';
-                portInput.value = getDefaultPortForProto(proto);
+                if (hostInput && hostInput.value.indexOf('/') >= 0) hostInput.value = '192.168.1.100';
 
                 if (proto === 'NEWCAMD') {
                     if (passDiv) passDiv.style.display = 'block';
@@ -3696,13 +3780,22 @@ class OscamLocalConfigWebServer(
 
         function pingServer(idx) {
             var card = document.getElementById('srv-box-' + idx);
-            var host = card.querySelector('.srv-host').value;
-            var port = parseInt(card.querySelector('.srv-port').value, 10) || 9000;
-            var proto = card.querySelector('.srv-proto').value;
-            var user = card.querySelector('.srv-user') ? card.querySelector('.srv-user').value : '';
-            var pass = card.querySelector('.srv-pass') ? card.querySelector('.srv-pass').value : '';
-            var des = card.querySelector('.srv-des') ? card.querySelector('.srv-des').value : '';
+            if (!card) return;
+            var hostEl = card.querySelector('.srv-host');
+            var portEl = card.querySelector('.srv-port');
+            var protoEl = card.querySelector('.srv-proto');
+            var userEl = card.querySelector('.srv-user');
+            var passEl = card.querySelector('.srv-pass');
+            var desEl = card.querySelector('.srv-des');
+
+            var host = hostEl ? hostEl.value : '127.0.0.1';
+            var port = portEl ? (parseInt(portEl.value, 10) || 9000) : 9000;
+            var proto = protoEl ? protoEl.value : 'CCCAM';
+            var user = userEl ? userEl.value : '';
+            var pass = passEl ? passEl.value : '';
+            var des = desEl ? desEl.value : '';
             var statusDiv = document.getElementById('ping-status-' + idx);
+            if (!statusDiv) return;
 
             statusDiv.style.color = 'var(--warning)';
             statusDiv.innerText = 'Testing ' + proto + ' connection to ' + host + (proto === 'DVBAPI_UNIX' ? '' : ':' + port) + '...';
@@ -4377,12 +4470,18 @@ class OscamLocalConfigWebServer(
                 });
             });
 
+            var deliveryEl = document.getElementById('delivery-dropdown');
+            var caidsEl = document.getElementById('caids-text-input');
+            var cwCacheEl = document.getElementById('cw-cache-toggle');
+            var timeoutEl = document.getElementById('timeout-input');
+            var reconnectEl = document.getElementById('reconnect-input');
+
             var payload = {
-                delivery_system: document.getElementById('delivery-dropdown').value,
-                caids: document.getElementById('caids-text-input').value,
-                cw_cache_enabled: document.getElementById('cw-cache-toggle').checked,
-                timeout_ms: parseInt(document.getElementById('timeout-input').value, 10) || 4000,
-                reconnect_interval_ms: parseInt(document.getElementById('reconnect-input').value, 10) || 2000,
+                delivery_system: deliveryEl ? deliveryEl.value : 'DVB-S2',
+                caids: caidsEl ? caidsEl.value : '0x1810',
+                cw_cache_enabled: cwCacheEl ? cwCacheEl.checked : true,
+                timeout_ms: timeoutEl ? (parseInt(timeoutEl.value, 10) || 4000) : 4000,
+                reconnect_interval_ms: reconnectEl ? (parseInt(reconnectEl.value, 10) || 2000) : 2000,
                 servers: servers,
                 channels: channels
             };

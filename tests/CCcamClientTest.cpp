@@ -56,45 +56,65 @@ TEST(CCcamCryptoTest, Sha1LongerStringVector) {
 }
 
 // ===========================================================================
-// Tests: RC4 Stream Cipher Symmetry & Roundtrip
+// Tests: CCcam Stream Cipher (cc_crypt) & ccXor
 // ===========================================================================
 
-TEST(CCcamCryptoTest, Rc4EncryptDecryptSymmetry) {
-    const uint8_t keyData[] = { 'K', 'e', 'y' };
+TEST(CCcamCryptoTest, CcCryptEncryptDecryptSymmetry) {
+    const uint8_t keyData[] = { 'K', 'e', 'y', '1', '2', '3' };
     const uint8_t plaintext[] = { 'P', 'l', 'a', 'i', 'n', 't', 'e', 'x', 't' };
     size_t len = sizeof(plaintext);
 
-    Rc4Key encKey, decKey;
-    CCcamClient::rc4Init(&encKey, keyData, sizeof(keyData));
-    CCcamClient::rc4Init(&decKey, keyData, sizeof(keyData));
+    CcCryptBlock encBlock, decBlock;
+    CCcamClient::ccInitCrypt(&encBlock, keyData, sizeof(keyData));
+    CCcamClient::ccInitCrypt(&decBlock, keyData, sizeof(keyData));
 
-    std::vector<uint8_t> ciphertext(len);
-    std::vector<uint8_t> decrypted(len);
+    std::vector<uint8_t> buffer(plaintext, plaintext + len);
 
-    CCcamClient::rc4Crypt(&encKey, plaintext, ciphertext.data(), len);
-    EXPECT_NE(std::memcmp(plaintext, ciphertext.data(), len), 0);
+    // Encrypt
+    CCcamClient::ccCrypt(&encBlock, buffer.data(), len, CcCryptMode::Encrypt);
+    EXPECT_NE(std::memcmp(plaintext, buffer.data(), len), 0);
 
-    CCcamClient::rc4Crypt(&decKey, ciphertext.data(), decrypted.data(), len);
-    EXPECT_EQ(std::memcmp(plaintext, decrypted.data(), len), 0);
+    // Decrypt
+    CCcamClient::ccCrypt(&decBlock, buffer.data(), len, CcCryptMode::Decrypt);
+    EXPECT_EQ(std::memcmp(plaintext, buffer.data(), len), 0);
 }
 
-TEST(CCcamCryptoTest, Rc4DifferentKeyYieldsDifferentOutput) {
-    const uint8_t key1[] = { 0x01, 0x02, 0x03, 0x04 };
-    const uint8_t key2[] = { 0x05, 0x06, 0x07, 0x08 };
-    const uint8_t plaintext[] = { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
-    size_t len = sizeof(plaintext);
+TEST(CCcamCryptoTest, CcXorTransformation) {
+    uint8_t seed[16] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10
+    };
+    uint8_t copy[16];
+    std::memcpy(copy, seed, 16);
 
-    Rc4Key k1, k2;
-    CCcamClient::rc4Init(&k1, key1, sizeof(key1));
-    CCcamClient::rc4Init(&k2, key2, sizeof(key2));
+    CCcamClient::ccXor(seed);
 
-    std::vector<uint8_t> cipher1(len);
-    std::vector<uint8_t> cipher2(len);
+    // ccXor must modify both lower and upper halves
+    EXPECT_NE(std::memcmp(seed, copy, 16), 0);
+    // Verification: buf[8+i] = i * buf[i]
+    for (uint8_t i = 0; i < 8; ++i) {
+        EXPECT_EQ(seed[8 + i], static_cast<uint8_t>(i * copy[i]));
+    }
+}
 
-    CCcamClient::rc4Crypt(&k1, plaintext, cipher1.data(), len);
-    CCcamClient::rc4Crypt(&k2, plaintext, cipher2.data(), len);
+TEST(CCcamCryptoTest, CcCwCryptRoundtrip) {
+    uint8_t originalCw[16] = {
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00
+    };
+    uint8_t cw[16];
+    std::memcpy(cw, originalCw, 16);
 
-    EXPECT_NE(std::memcmp(cipher1.data(), cipher2.data(), len), 0);
+    uint64_t nodeId = 0x0102030405060708ULL;
+    uint32_t cardId = 0x12345678U;
+
+    // First call encodes CW
+    CCcamClient::ccCwCrypt(cw, nodeId, cardId);
+    EXPECT_NE(std::memcmp(originalCw, cw, 16), 0);
+
+    // Second call decodes CW back to original
+    CCcamClient::ccCwCrypt(cw, nodeId, cardId);
+    EXPECT_EQ(std::memcmp(originalCw, cw, 16), 0);
 }
 
 // ===========================================================================

@@ -126,39 +126,61 @@ void CCcamClient::sha1(const uint8_t* data, size_t length, uint8_t outDigest[20]
 }
 
 // ===========================================================================
-// Self-Contained RC4 Implementation
+// Self-Contained CCcam Stream Cipher Implementation (cc_crypt)
 // ===========================================================================
 
-void CCcamClient::rc4Init(Rc4Key* key, const uint8_t* keyData, size_t keyLen) {
-    if (!key || !keyData || keyLen == 0) return;
+void CCcamClient::ccInitCrypt(CcCryptBlock* block, const uint8_t* key, size_t keyLen) {
+    if (!block || !key || keyLen == 0) return;
     for (int i = 0; i < 256; ++i) {
-        key->state[i] = static_cast<uint8_t>(i);
+        block->keytable[i] = static_cast<uint8_t>(i);
     }
-    key->x = 0;
-    key->y = 0;
-
     uint8_t j = 0;
     for (int i = 0; i < 256; ++i) {
-        j = static_cast<uint8_t>(j + key->state[i] + keyData[i % keyLen]);
-        std::swap(key->state[i], key->state[j]);
+        j = static_cast<uint8_t>(j + key[i % keyLen] + block->keytable[i]);
+        std::swap(block->keytable[i], block->keytable[j]);
+    }
+    block->state = key[0];
+    block->counter = 0;
+    block->sum = 0;
+}
+
+void CCcamClient::ccCrypt(CcCryptBlock* block, uint8_t* data, size_t len, CcCryptMode mode) {
+    if (!block || !data) return;
+    for (size_t i = 0; i < len; ++i) {
+        block->counter = static_cast<uint8_t>(block->counter + 1);
+        block->sum = static_cast<uint8_t>(block->sum + block->keytable[block->counter]);
+        std::swap(block->keytable[block->counter], block->keytable[block->sum]);
+
+        uint8_t z = data[i];
+        data[i] = static_cast<uint8_t>(z ^ block->keytable[(block->keytable[block->counter] + block->keytable[block->sum]) & 0xFF]);
+        data[i] ^= block->state;
+        if (mode == CcCryptMode::Decrypt) {
+            z = data[i];
+        }
+        block->state = static_cast<uint8_t>(block->state ^ z);
     }
 }
 
-void CCcamClient::rc4Crypt(Rc4Key* key, const uint8_t* in, uint8_t* out, size_t len) {
-    if (!key || !in || !out) return;
-    uint8_t x = key->x;
-    uint8_t y = key->y;
-
-    for (size_t i = 0; i < len; ++i) {
-        x = static_cast<uint8_t>(x + 1);
-        y = static_cast<uint8_t>(y + key->state[x]);
-        std::swap(key->state[x], key->state[y]);
-        uint8_t xorByte = key->state[(key->state[x] + key->state[y]) & 0xFF];
-        out[i] = in[i] ^ xorByte;
+void CCcamClient::ccXor(uint8_t* buf) {
+    if (!buf) return;
+    const char cccamMagic[] = "CCcam";
+    for (uint8_t i = 0; i < 8; ++i) {
+        buf[8 + i] = static_cast<uint8_t>(i * buf[i]);
+        if (i <= 5) {
+            buf[i] ^= static_cast<uint8_t>(cccamMagic[i]);
+        }
     }
+}
 
-    key->x = x;
-    key->y = y;
+void CCcamClient::ccCwCrypt(uint8_t* cws, uint64_t nodeId, uint32_t cardId) {
+    if (!cws) return;
+    for (int i = 0; i < 16; ++i) {
+        uint8_t tmp = static_cast<uint8_t>(cws[i] ^ ((nodeId >> (4 * i)) & 0xFF));
+        if (i & 1) {
+            tmp = static_cast<uint8_t>(~tmp);
+        }
+        cws[i] = static_cast<uint8_t>(((cardId >> (2 * i)) & 0xFF) ^ tmp);
+    }
 }
 
 // ===========================================================================
@@ -243,6 +265,34 @@ bool CCcamClient::writeFull(int socketFd, const uint8_t* buffer, size_t count) {
     return total == count;
 }
 
+bool CCcamClient::sendMsg(int socketFd, uint8_t cmd, const uint8_t* payload, size_t payloadLen) {
+    std::vector<uint8_t> netbuf(4 + payloadLen);
+    netbuf[0] = 0; // flag / index
+    netbuf[1] = cmd;
+    netbuf[2] = static_cast<uint8_t>((payloadLen >> 8) & 0xFF);
+    netbuf[3] = static_cast<uint8_t>(payloadLen & 0xFF);
+    if (payload && payloadLen > 0) {
+        std::memcpy(netbuf.data() + 4, payload, payloadLen);
+    }
+    ccCrypt(&sendBlock_, netbuf.data(), netbuf.size(), CcCryptMode::Encrypt);
+    return writeFull(socketFd, netbuf.data(), netbuf.size());
+}
+
+bool CCcamClient::recvMsg(int socketFd, uint8_t& outCmd, std::vector<uint8_t>& outPayload) {
+    uint8_t hdr[4];
+    if (!readFull(socketFd, hdr, 4)) return false;
+    ccCrypt(&recvBlock_, hdr, 4, CcCryptMode::Decrypt);
+    outCmd = hdr[1];
+    uint16_t size = (static_cast<uint16_t>(hdr[2]) << 8) | hdr[3];
+    if (size > 4096) return false;
+    outPayload.resize(size);
+    if (size > 0) {
+        if (!readFull(socketFd, outPayload.data(), size)) return false;
+        ccCrypt(&recvBlock_, outPayload.data(), size, CcCryptMode::Decrypt);
+    }
+    return true;
+}
+
 bool CCcamClient::connectAndLogin(int& socketFd) {
     socketFd = -1;
 
@@ -309,10 +359,10 @@ bool CCcamClient::connectAndLogin(int& socketFd) {
     int nodelay = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
-    // CCcam Handshake:
-    // Step 1: Read 16-byte random IV from server
-    uint8_t srvRandom[16];
-    if (!readFull(fd, srvRandom, 16)) {
+    // CCcam Handshake (strictly compliant with CCcam 2.x & OSCam module-cccam.c specification):
+    // Step 1: Read 16-byte random seed from server
+    uint8_t data[16];
+    if (!readFull(fd, data, 16)) {
 #ifdef _WIN32
         closesocket(fd);
 #else
@@ -321,20 +371,24 @@ bool CCcamClient::connectAndLogin(int& socketFd) {
         return false;
     }
 
-    // Step 2: Initialize crypto
-    // SHA1(srvRandom) -> key for decrypting / encrypting
+    // Step 2: XOR init bytes with "CCcam"
+    ccXor(data);
+
+    // Step 3: SHA1(data) -> hash (20 bytes)
     uint8_t hash[20];
-    sha1(srvRandom, 16, hash);
+    sha1(data, 16, hash);
 
-    rc4Init(&recvRc4_, hash, 20);
-    rc4Init(&sendRc4_, hash, 20);
+    // Step 4: Initialize cryptographic states (DECRYPT with hash then crypt data; ENCRYPT with data then crypt hash)
+    ccInitCrypt(&recvBlock_, hash, 20);
+    ccCrypt(&recvBlock_, data, 16, CcCryptMode::Decrypt);
+    ccInitCrypt(&sendBlock_, data, 16);
+    ccCrypt(&sendBlock_, hash, 20, CcCryptMode::Decrypt);
 
-    // Encrypt srvRandom as challenge response
-    uint8_t challengeResp[16];
-    rc4Crypt(&sendRc4_, srvRandom, challengeResp, 16);
-
-    // Send challenge response
-    if (!writeFull(fd, challengeResp, 16)) {
+    // Step 5: Send encrypted hash (20 bytes) to server
+    uint8_t sendHash[20];
+    std::memcpy(sendHash, hash, 20);
+    ccCrypt(&sendBlock_, sendHash, 20, CcCryptMode::Encrypt);
+    if (!writeFull(fd, sendHash, 20)) {
 #ifdef _WIN32
         closesocket(fd);
 #else
@@ -343,17 +397,11 @@ bool CCcamClient::connectAndLogin(int& socketFd) {
         return false;
     }
 
-    // Step 3: Send credentials (User, Password, Client Node ID)
-    // Packet: [Username (20 bytes)] + [Client Node ID (8 bytes)] + [Version string (6 bytes)]
-    uint8_t loginBuf[34] = {0};
-    std::strncpy(reinterpret_cast<char*>(loginBuf), config_.user.c_str(), 20);
-    std::memcpy(loginBuf + 20, clientNodeId_, 8);
-    std::memcpy(loginBuf + 28, "2.3.0\0", 6);
-
-    uint8_t encLogin[34];
-    rc4Crypt(&sendRc4_, loginBuf, encLogin, 34);
-
-    if (!writeFull(fd, encLogin, 34)) {
+    // Step 6: Send username (20 bytes, 0-padded) encrypted
+    uint8_t userBuf[20] = {0};
+    std::memcpy(userBuf, config_.user.data(), std::min(config_.user.size(), size_t(20)));
+    ccCrypt(&sendBlock_, userBuf, 20, CcCryptMode::Encrypt);
+    if (!writeFull(fd, userBuf, 20)) {
 #ifdef _WIN32
         closesocket(fd);
 #else
@@ -362,9 +410,14 @@ bool CCcamClient::connectAndLogin(int& socketFd) {
         return false;
     }
 
-    // Step 4: Read server acknowledge and server node ID (8 bytes)
-    uint8_t srvAck[8];
-    if (!readFull(fd, srvAck, 8)) {
+    // Step 7: Password advancement & sending "CCcam\0" challenge
+    // In CCcam protocol, the password encrypts through sendBlock_ to advance cipher state
+    std::vector<uint8_t> pwdBuf(config_.password.begin(), config_.password.end());
+    ccCrypt(&sendBlock_, pwdBuf.data(), pwdBuf.size(), CcCryptMode::Encrypt);
+
+    uint8_t cccamMagic[6] = { 'C', 'C', 'c', 'a', 'm', '\0' };
+    ccCrypt(&sendBlock_, cccamMagic, 6, CcCryptMode::Encrypt);
+    if (!writeFull(fd, cccamMagic, 6)) {
 #ifdef _WIN32
         closesocket(fd);
 #else
@@ -373,7 +426,44 @@ bool CCcamClient::connectAndLogin(int& socketFd) {
         return false;
     }
 
-    rc4Crypt(&recvRc4_, srvAck, serverNodeId_, 8);
+    // Step 8: Read 20-byte server password ACK
+    uint8_t srvAck[20];
+    if (!readFull(fd, srvAck, 20)) {
+#ifdef _WIN32
+        closesocket(fd);
+#else
+        close(fd);
+#endif
+        return false;
+    }
+
+    ccCrypt(&recvBlock_, srvAck, 20, CcCryptMode::Decrypt);
+    if (std::memcmp(srvAck, "CCcam\0", 6) != 0 && std::memcmp(srvAck, "CCcam", 5) != 0) {
+        BRIDGE_LOGE("CCcam: Authentication rejected by server (invalid username/password)");
+#ifdef _WIN32
+        closesocket(fd);
+#else
+        close(fd);
+#endif
+        return false;
+    }
+
+    // Step 9: Send client data (MSG_CLI_DATA = 0x00, size = 93 bytes)
+    const size_t cliDataSize = 20 + 8 + 1 + 32 + 32;
+    uint8_t cliData[cliDataSize] = {0};
+    std::memcpy(cliData, config_.user.data(), std::min(config_.user.size(), size_t(20)));
+    std::memcpy(cliData + 20, clientNodeId_, 8);
+    cliData[28] = 0; // want_emu = 0
+    std::memcpy(cliData + 29, "2.3.0", 5);
+    std::memcpy(cliData + 61, "3367", 4);
+    if (!sendMsg(fd, 0x00, cliData, cliDataSize)) { // MSG_CLI_DATA
+#ifdef _WIN32
+        closesocket(fd);
+#else
+        close(fd);
+#endif
+        return false;
+    }
 
     socketFd = fd;
     return true;
@@ -387,34 +477,29 @@ bool CCcamClient::sendEcm(uint16_t serviceId, uint16_t caid, uint32_t providerId
     std::lock_guard<std::mutex> lock(socketMutex_);
     if (activeSocketFd_ < 0) return false;
 
-    // CCcam ECM frame:
-    // Header (4 bytes): [Opcode: 0x01 (MSG_CW_ECM)], [Length MSB], [Length LSB], [Parity / Flags]
-    // Payload: [CAID 2B] + [ProvID 4B] + [ServiceID 2B] + [ECM raw data]
-    size_t payloadLen = 2 + 4 + 2 + length;
-    std::vector<uint8_t> frame(4 + payloadLen);
+    // CCcam ECM payload:
+    // [caid: 2B] + [providerId: 4B] + [cardId: 4B] + [serviceId: 2B] + [ecmlen: 1B] + [ecmData]
+    size_t payloadLen = 13 + length;
+    std::vector<uint8_t> frame(payloadLen, 0);
 
-    frame[0] = 0x01; // MSG_CW_ECM
-    frame[1] = static_cast<uint8_t>((payloadLen >> 8) & 0xFF);
-    frame[2] = static_cast<uint8_t>(payloadLen & 0xFF);
-    frame[3] = (ecmData[0] == 0x81) ? 1 : 0; // Parity
+    frame[0] = static_cast<uint8_t>((caid >> 8) & 0xFF);
+    frame[1] = static_cast<uint8_t>(caid & 0xFF);
 
-    frame[4] = static_cast<uint8_t>((caid >> 8) & 0xFF);
-    frame[5] = static_cast<uint8_t>(caid & 0xFF);
+    frame[2] = static_cast<uint8_t>((providerId >> 24) & 0xFF);
+    frame[3] = static_cast<uint8_t>((providerId >> 16) & 0xFF);
+    frame[4] = static_cast<uint8_t>((providerId >>  8) & 0xFF);
+    frame[5] = static_cast<uint8_t>( providerId        & 0xFF);
 
-    frame[6] = static_cast<uint8_t>((providerId >> 24) & 0xFF);
-    frame[7] = static_cast<uint8_t>((providerId >> 16) & 0xFF);
-    frame[8] = static_cast<uint8_t>((providerId >>  8) & 0xFF);
-    frame[9] = static_cast<uint8_t>( providerId        & 0xFF);
+    // cardId [6..9] = 0 (default share card)
 
     frame[10] = static_cast<uint8_t>((serviceId >> 8) & 0xFF);
     frame[11] = static_cast<uint8_t>(serviceId & 0xFF);
 
-    std::memcpy(&frame[12], ecmData, length);
+    frame[12] = static_cast<uint8_t>(length & 0xFF);
 
-    // Encrypt frame with sendRc4
-    rc4Crypt(&sendRc4_, frame.data(), frame.data(), frame.size());
+    std::memcpy(frame.data() + 13, ecmData, length);
 
-    return writeFull(activeSocketFd_, frame.data(), frame.size());
+    return sendMsg(activeSocketFd_, 0x01, frame.data(), frame.size()); // MSG_CW_ECM = 0x01
 }
 
 void CCcamClient::workerLoop() {
@@ -452,49 +537,39 @@ void CCcamClient::workerLoop() {
 
         // Message receive loop
         while (running_.load() && connected_.load()) {
-            // Read 4-byte message header
-            uint8_t rawHeader[4];
-            if (!readFull(socketFd, rawHeader, 4)) {
+            uint8_t opcode = 0;
+            std::vector<uint8_t> payload;
+            if (!recvMsg(socketFd, opcode, payload)) {
                 break;
             }
 
-            uint8_t decHeader[4];
-            rc4Crypt(&recvRc4_, rawHeader, decHeader, 4);
-
-            uint8_t opcode = decHeader[0];
-            uint16_t msgLen = (static_cast<uint16_t>(decHeader[1]) << 8) | decHeader[2];
-
-            if (msgLen > 4096) {
-                BRIDGE_LOGE("CCcamClient: Malformed message length: %u", msgLen);
-                break;
-            }
-
-            std::vector<uint8_t> payload(msgLen);
-            if (msgLen > 0 && !readFull(socketFd, payload.data(), msgLen)) {
-                break;
-            }
-
-            if (msgLen > 0) {
-                rc4Crypt(&recvRc4_, payload.data(), payload.data(), msgLen);
-            }
-
-            // Opcode 0x01: CW response (16 bytes = 8 bytes Even + 8 bytes Odd)
+            // Opcode 0x01: MSG_CW_ECM response (Control Word payload)
             if (opcode == 0x01 && payload.size() >= 16) {
+                // Decode CW if encoded with node ID
+                uint64_t nodeId64 = 0;
+                for (int i = 0; i < 8; ++i) {
+                    nodeId64 = (nodeId64 << 8) | clientNodeId_[i];
+                }
+                ccCwCrypt(payload.data(), nodeId64, 0);
+
                 const uint8_t* evenCw = payload.data();
-                const uint8_t* oddCw = payload.data() + 8;
+                const uint8_t* oddCw  = payload.data() + 8;
 
                 if (callbacks_.onControlWord) {
                     callbacks_.onControlWord(0, 0, evenCw, 8); // Even CW
                     callbacks_.onControlWord(0, 1, oddCw, 8);  // Odd CW
                 }
+            } else if (opcode == 0x08 && payload.size() >= 8) { // MSG_SRV_DATA
+                std::memcpy(serverNodeId_, payload.data(), 8);
+            } else if (opcode == 0x06) { // MSG_KEEPALIVE
+                // ACK keepalive
+                sendMsg(socketFd, 0x06, nullptr, 0);
             }
 
-            // Keepalive ping every 45 seconds (Opcode 0x06 MSG_KEEPALIVE)
+            // Periodic client keepalive every 45 seconds (MSG_KEEPALIVE = 0x06)
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::seconds>(now - lastKeepalive).count() >= 45) {
-                uint8_t ping[4] = { 0x06, 0x00, 0x00, 0x00 };
-                rc4Crypt(&sendRc4_, ping, ping, 4);
-                writeFull(socketFd, ping, 4);
+                sendMsg(socketFd, 0x06, nullptr, 0);
                 lastKeepalive = now;
             }
         }
@@ -552,7 +627,7 @@ bool CCcamClient::testConnection(
     }
 
     if (!ok) {
-        outError = "CCcam: Connection refused or authentication failed";
+        outError = "CCcam: Connection refused or authentication failed (check host, port, user and password)";
     }
     return ok;
 }

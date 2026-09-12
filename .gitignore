@@ -126,6 +126,7 @@ secring.gpg
 core
 core.*
 vgcore.*
+scratch_*.py
 
 # ------------------------------------------------------------------------------
 # Operating System Temporary Files
