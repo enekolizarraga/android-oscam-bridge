@@ -291,43 +291,70 @@ object SatelliteTunerMonitor {
             realFreq = f
         }
 
-        var realPol = if (propPol.isNotEmpty()) propPol else "V"
-        var realSr = getSystemPropertyInt("vendor.tv.tuning.symbolrate", 22000)
-        var realSat = if (propSat.isNotEmpty()) propSat else "Astra 19.2°E"
-        var channelName = liveChannel?.channelName ?: "Canal Activo (SID 0x%04X)".format(lastTuning.serviceId)
+        var realPol = if (propPol.isNotEmpty()) propPol else ""
+        var realSr = getSystemPropertyInt("vendor.tv.tuning.symbolrate", 0)
+        var realSat = if (propSat.isNotEmpty()) propSat else ""
+        var channelName = liveChannel?.channelName ?: if (lastTuning.serviceId > 0) "Canal SID 0x%04X".format(lastTuning.serviceId) else "Canal Sintonizado"
 
-        // Try to match tuned SID with configured channels in repository
-        try {
-            val config = OscamConfigRepository(context).getCurrentConfig()
-            val matchedCh = config.channels.firstOrNull { it.serviceId == liveChannel?.serviceId || it.serviceId == lastTuning.serviceId }
-            if (matchedCh != null) {
-                if (realFreq == 0) realFreq = matchedCh.frequency
-                realPol = matchedCh.polarization
-                realSr = matchedCh.symbolRate
-                realSat = matchedCh.satellite
-                channelName = matchedCh.name
+        val targetSid = liveChannel?.serviceId ?: lastTuning.serviceId
+
+        // 1. Try to match tuned SID with configured channels in repository
+        if (targetSid > 0) {
+            try {
+                val config = OscamConfigRepository(context).getCurrentConfigBlocking()
+                val matchedCh = config.channels.firstOrNull { it.serviceId == targetSid }
+                if (matchedCh != null) {
+                    if (realFreq == 0) realFreq = matchedCh.frequency
+                    if (realPol.isEmpty()) realPol = matchedCh.polarization
+                    if (realSr == 0) realSr = matchedCh.symbolRate
+                    if (realSat.isEmpty()) realSat = matchedCh.satellite
+                    channelName = matchedCh.name
+                }
+            } catch (ignored: Exception) {}
+
+            // 2. Try to query real channels from Android TV TvContract database
+            if (realFreq == 0 || realSat.isEmpty()) {
+                val tvChInfo = queryTvContractChannel(context, targetSid)
+                if (tvChInfo != null) {
+                    if (realFreq == 0 && tvChInfo.frequency > 0) realFreq = tvChInfo.frequency
+                    if (realPol.isEmpty() && tvChInfo.polarization.isNotEmpty()) realPol = tvChInfo.polarization
+                    if (realSr == 0 && tvChInfo.symbolRate > 0) realSr = tvChInfo.symbolRate
+                    if (realSat.isEmpty() && tvChInfo.satellite.isNotEmpty()) realSat = tvChInfo.satellite
+                    if (channelName.startsWith("Canal")) channelName = tvChInfo.name
+                }
             }
-        } catch (ignored: Exception) {}
+        }
 
-        if (realFreq == 0) realFreq = 10729
+        if (realPol.isEmpty()) realPol = "V"
+        if (realSat.isEmpty()) realSat = "DVB-S2 (Frecuencia en detección)"
 
         val realStrength = when {
             sysfsStrength in 0..100 -> sysfsStrength
             propStrength in 0..100 -> propStrength
-            else -> 85 // Real locked carrier typical nominal level
+            else -> 0
         }
 
         val realSnr = when {
             sysfsSnr > 0.0 -> sysfsSnr
             propSnr > 0.0 -> propSnr
-            else -> 14.2 // Real locked carrier typical nominal SNR
+            else -> 0.0
         }
 
-        val realBer = if (sysfsBer.isNotEmpty()) sysfsBer else "< 1.0e-7"
+        val realBer = if (sysfsBer.isNotEmpty()) sysfsBer else "N/A"
         val isTone = realFreq > 11700 // Universal LNB: High Band (>11.7 GHz) requires 22kHz tone
-        val voltageStr = if (realPol.equals("H", ignoreCase = true)) "18V (Horizontal)" else "13V (Vertical)"
+        val voltageStr = when {
+            realPol.equals("H", ignoreCase = true) -> "18V (Horizontal)"
+            realPol.equals("V", ignoreCase = true) -> "13V (Vertical)"
+            else -> "13V/18V Auto"
+        }
 
         val casInfo = liveChannel?.casSystem ?: CasSystemDetector.detect(liveChannel?.caid ?: 0).systemName
+
+        val statusMsg = if (realFreq > 0) {
+            "Sintonizado en vivo: $channelName (Transponder ${realFreq}MHz $realPol${if (realSr > 0) " SR:$realSr" else ""} en $realSat) - CAS: $casInfo"
+        } else {
+            "Sintonizado en vivo: $channelName (Portadora bloqueada en $nodeLabel) - CAS: $casInfo"
+        }
 
         return TunerSignalTelemetry(
             cableConnected = true,
@@ -344,8 +371,60 @@ object SatelliteTunerMonitor {
             deliverySystem = "DVB-S2 QPSK / 8PSK",
             frontendDeviceNode = nodeLabel,
             hardwareDetected = hasHw,
-            statusMessage = "Sintonizado en vivo: $channelName (Transponder ${realFreq}MHz $realPol SR:$realSr en $realSat) - CAS: $casInfo"
+            statusMessage = statusMsg
         )
+    }
+
+    data class TvContractChannelData(
+        val name: String,
+        val frequency: Int,
+        val polarization: String,
+        val symbolRate: Int,
+        val satellite: String
+    )
+
+    private fun queryTvContractChannel(context: Context, serviceId: Int): TvContractChannelData? {
+        try {
+            val uri = TvContract.Channels.CONTENT_URI
+            val projection = arrayOf(
+                TvContract.Channels._ID,
+                TvContract.Channels.COLUMN_DISPLAY_NAME,
+                TvContract.Channels.COLUMN_SERVICE_ID,
+                TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA
+            )
+            val selection = "${TvContract.Channels.COLUMN_SERVICE_ID} = ?"
+            val selectionArgs = arrayOf(serviceId.toString())
+            val cursor: Cursor? = context.contentResolver.query(uri, projection, selection, selectionArgs, null)
+            cursor?.use { c ->
+                if (c.moveToFirst()) {
+                    val name = c.getString(c.getColumnIndexOrThrow(TvContract.Channels.COLUMN_DISPLAY_NAME)) ?: ""
+                    val rawData = c.getString(c.getColumnIndexOrThrow(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA)) ?: ""
+
+                    var freq = 0
+                    var pol = ""
+                    var sr = 0
+                    var sat = ""
+
+                    // Extract frequency from internal_provider_data (json or key-value)
+                    val freqRegex = Regex("""(?:freq|frequency)[\":=\s]+(\d+)""", RegexOption.IGNORE_CASE)
+                    val polRegex = Regex("""(?:pol|polarization)[\":=\s]+([VH])""", RegexOption.IGNORE_CASE)
+                    val srRegex = Regex("""(?:sr|symbol_rate|symbolrate)[\":=\s]+(\d+)""", RegexOption.IGNORE_CASE)
+                    val satRegex = Regex("""(?:sat|satellite)[\":=\s]+["']?([^"',}\n]+)""", RegexOption.IGNORE_CASE)
+
+                    freqRegex.find(rawData)?.groupValues?.get(1)?.toIntOrNull()?.let {
+                        freq = if (it > 1000000) it / 1000 else it
+                    }
+                    polRegex.find(rawData)?.groupValues?.get(1)?.let { pol = it }
+                    srRegex.find(rawData)?.groupValues?.get(1)?.toIntOrNull()?.let { sr = it }
+                    satRegex.find(rawData)?.groupValues?.get(1)?.let { sat = it.trim() }
+
+                    return TvContractChannelData(name, freq, pol, sr, sat)
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "TvContract query: ${e.message}")
+        }
+        return null
     }
 
     /**

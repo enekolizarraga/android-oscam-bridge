@@ -2202,6 +2202,36 @@ class OscamLocalConfigWebServer(
         hw: DeviceHardwareInfo,
         tuner: SatelliteTunerMonitor.TunerSignalTelemetry
     ): String {
+        val dm = context.resources.displayMetrics
+        val realDisplay = "${dm.widthPixels}x${dm.heightPixels} @ ${dm.densityDpi} DPI"
+
+        val dataDir = Environment.getDataDirectory()
+        val stat = StatFs(dataDir.path)
+        val totalStorageGb = String.format(Locale.US, "%.1f", (stat.blockCountLong * stat.blockSizeLong) / (1024.0 * 1024 * 1024))
+        val freeStorageGb = String.format(Locale.US, "%.1f", (stat.availableBlocksLong * stat.blockSizeLong) / (1024.0 * 1024 * 1024))
+        val realStorage = "$freeStorageGb GB libres / $totalStorageGb GB total"
+
+        var realIp = "127.0.0.1"
+        var realIface = "Ethernet/Wi-Fi"
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                if (iface.isUp && !iface.isLoopback) {
+                    val addrs = iface.inetAddresses
+                    while (addrs.hasMoreElements()) {
+                        val addr = addrs.nextElement()
+                        if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                            realIp = addr.hostAddress ?: "127.0.0.1"
+                            realIface = iface.name
+                            break
+                        }
+                    }
+                }
+            }
+        } catch (ignored: Exception) {}
+        val realNetwork = "$realIface ($realIp)"
+
         return """
 <!DOCTYPE html>
 <html lang="en">
@@ -2648,7 +2678,7 @@ class OscamLocalConfigWebServer(
                             <span id="chart-lat-label" style="color:var(--primary);">-- ms</span>
                         </div>
                         <svg class="sparkline" id="svg-lat-chart" viewBox="0 0 500 85" preserveAspectRatio="none">
-                            <polyline fill="none" stroke="#3B82F6" stroke-width="2.5" points="0,75 50,70 100,68 150,60 200,65 250,55 300,58 350,50 400,52 450,48 500,50" id="line-latency"/>
+                            <polyline fill="none" stroke="#3B82F6" stroke-width="2.5" points="0,85 500,85" id="line-latency"/>
                         </svg>
                     </div>
 
@@ -2658,7 +2688,7 @@ class OscamLocalConfigWebServer(
                             <span id="chart-ecm-label" style="color:var(--accent);">Active</span>
                         </div>
                         <svg class="sparkline" id="svg-ecm-chart" viewBox="0 0 500 85" preserveAspectRatio="none">
-                            <polyline fill="none" stroke="#8B5CF6" stroke-width="2.5" points="0,60 50,65 100,55 150,70 200,60 250,62 300,50 350,55 400,45 450,52 500,48" id="line-ecm"/>
+                            <polyline fill="none" stroke="#8B5CF6" stroke-width="2.5" points="0,85 500,85" id="line-ecm"/>
                         </svg>
                     </div>
                 </div>
@@ -3181,19 +3211,19 @@ class OscamLocalConfigWebServer(
 
                     <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">DISPLAY &amp; RESOLUTION</div>
-                        <div id="tv-display-info" style="font-size:17px; font-weight:800; color:#60A5FA; margin-top:4px;">4K UHD (3840x2160) @ 120Hz</div>
-                        <div class="hint">HDR10, HDR10+, Dolby Vision, HLG</div>
+                        <div id="tv-display-info" style="font-size:17px; font-weight:800; color:#60A5FA; margin-top:4px;">${realDisplay}</div>
+                        <div class="hint">Native Display Metrics</div>
                     </div>
 
                     <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">INTERNAL STORAGE</div>
-                        <div id="tv-storage-info" style="font-size:17px; font-weight:800; color:#C4B5FD; margin-top:4px;">Flash Memory Active</div>
+                        <div id="tv-storage-info" style="font-size:17px; font-weight:800; color:#C4B5FD; margin-top:4px;">${realStorage}</div>
                         <div class="hint">Android TV /data partition</div>
                     </div>
 
                     <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">ACTIVE NETWORK INTERFACE</div>
-                        <div id="tv-network-info" style="font-size:17px; font-weight:800; color:#FCD34D; margin-top:4px;">Ethernet / Wi-Fi Active</div>
+                        <div id="tv-network-info" style="font-size:17px; font-weight:800; color:#FCD34D; margin-top:4px;">${realNetwork}</div>
                         <div class="hint">Direct LAN communication</div>
                     </div>
                 </div>
@@ -3448,8 +3478,9 @@ class OscamLocalConfigWebServer(
     </div>
 
     <script>
-        var latencyHistory = [65, 58, 55, 62, 58, 50, 52, 48, 50, 52];
-        var ecmHistory = [12, 15, 14, 18, 16, 15, 19, 21, 18, 20];
+        var latencyHistory = [];
+        var ecmHistory = [];
+        var lastEcmTotal = -1;
         var autoScrollEnabled = true;
         var currentServers = [];
 
@@ -4489,13 +4520,37 @@ class OscamLocalConfigWebServer(
 
                     if (st === 'CONNECTED') {
                         dot.style.background = 'var(--success)';
+                        var lat = data.last_cw_time_ms || 0;
+                        updateLatencySparkline(lat);
                     } else if (st === 'CONNECTING') {
                         dot.style.background = 'var(--warning)';
+                        updateLatencySparkline(0);
                     } else {
                         dot.style.background = 'var(--danger)';
+                        updateLatencySparkline(0);
                     }
+
+                    var currentEcms = data.ecms_sent || 0;
+                    var ecmRate = (lastEcmTotal >= 0) ? Math.max(0, currentEcms - lastEcmTotal) : 0;
+                    lastEcmTotal = currentEcms;
+                    updateEcmSparkline(ecmRate);
                 })
                 .catch(function() {});
+        }
+
+        function updateEcmSparkline(rate) {
+            ecmHistory.push(rate);
+            if (ecmHistory.length > 11) ecmHistory.shift();
+            var max = Math.max.apply(null, ecmHistory.concat([5]));
+            var points = ecmHistory.map(function(val, idx) {
+                var x = idx * 50;
+                var y = 80 - ((val / max) * 70);
+                return x + ',' + y;
+            }).join(' ');
+            var el = document.getElementById('line-ecm');
+            if (el) el.setAttribute('points', points);
+            var label = document.getElementById('chart-ecm-label');
+            if (label) label.innerText = rate + ' ECM/ciclo';
         }
 
         function refreshLogs() {
@@ -4641,6 +4696,18 @@ class OscamLocalConfigWebServer(
                             cableInd.style.color = t.cable_connected ? '#10B981' : '#EF4444';
                             cableInd.style.borderColor = t.cable_connected ? '#10B981' : '#EF4444';
                         }
+                    }
+                    if (data.display && data.display.resolution) {
+                        var dEl = document.getElementById('tv-display-info');
+                        if (dEl) dEl.innerText = data.display.resolution + ' @ ' + (data.display.density_dpi || 0) + ' DPI';
+                    }
+                    if (data.storage && data.storage.total_gb) {
+                        var sEl = document.getElementById('tv-storage-info');
+                        if (sEl) sEl.innerText = data.storage.free_gb + ' GB libres / ' + data.storage.total_gb + ' GB total';
+                    }
+                    if (data.network && data.network.ip) {
+                        var nEl = document.getElementById('tv-network-info');
+                        if (nEl) nEl.innerText = (data.network.interface || 'eth0') + ' (' + data.network.ip + ')';
                     }
                     showAlert('✓ Telemetría de TV, sintonizador y CI+ actualizada', 'success');
                 })
