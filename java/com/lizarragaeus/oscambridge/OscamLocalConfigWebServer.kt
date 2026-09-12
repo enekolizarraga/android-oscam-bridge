@@ -2,9 +2,9 @@ package com.lizarragaeus.oscambridge
 
 import android.content.Context
 import android.util.Log
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpHandler
-import com.sun.net.httpserver.HttpServer
+import com.lizarragaeus.oscambridge.http.HttpExchange
+import com.lizarragaeus.oscambridge.http.HttpHandler
+import com.lizarragaeus.oscambridge.http.HttpServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
