@@ -564,12 +564,24 @@ class OscamLocalConfigWebServer(
         TransponderSpec(12476, "H", 27500, "3/4", "DVB-S2 8PSK", "NOS (Portugal)", listOf("SIC Radical", "Canal Q", "Porto Canal"))
     )
 
+    private fun parseQueryParams(query: String?): Map<String, String> {
+        if (query.isNullOrBlank()) return emptyMap()
+        return query.split("&").filter { it.contains("=") }.associate {
+            val parts = it.split("=", limit = 2)
+            try {
+                java.net.URLDecoder.decode(parts[0], "UTF-8") to java.net.URLDecoder.decode(parts[1], "UTF-8")
+            } catch (_: Exception) {
+                parts[0] to parts[1]
+            }
+        }
+    }
+
     private inner class ApiSpectrumScanHandler : HttpHandler {
         override fun handle(exchange: HttpExchange) {
             scope.launch {
                 try {
                     val query = exchange.requestURI.query ?: ""
-                    val params = parseQuery(query)
+                    val params = parseQueryParams(query)
                     val satParam = params["satellite"]?.lowercase() ?: "astra"
                     val polParam = params["pol"]?.uppercase() ?: "ALL"
 
