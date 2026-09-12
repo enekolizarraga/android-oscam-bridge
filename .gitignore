@@ -33,6 +33,7 @@ target/
 *.dylib
 *.dll
 *.exe
+!app/src/main/jniLibs/**
 *.d
 *.ninja
 *.ninja_deps
