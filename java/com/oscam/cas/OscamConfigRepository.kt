@@ -44,7 +44,8 @@ enum class TunerDeliverySystem {
  */
 enum class ServerProtocol {
     DVBAPI,   ///< OSCam native dvbapi protocol (TCP)
-    NEWCAMD;  ///< Newcamd v5.25 protocol with DES/3DES encryption (TCP)
+    NEWCAMD,  ///< Newcamd v5.25 protocol with DES/3DES encryption (TCP)
+    CCCAM;    ///< CCcam v2.0.11 / v2.3.0 protocol with RC4/SHA1 encryption (TCP)
 
     companion object {
         fun fromString(value: String): ServerProtocol {

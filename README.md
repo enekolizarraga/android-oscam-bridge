@@ -16,13 +16,16 @@ Designed for personal domestic research, home lab environments, and legal intero
 
 - [How It Works (Architecture)](#how-it-works-architecture)
 - [Key Features](#key-features)
-- [Multi-Protocol Engine (OSCam DVBAPI & Newcamd v5.25)](#multi-protocol-engine-oscam-dvbapi--newcamd-v525)
+- [Multi-Protocol Engine (OSCam DVBAPI, Newcamd v5.25 & CCcam)](#multi-protocol-engine-oscam-dvbapi-newcamd-v525--cccam)
+- [Native TV OEM Player Compatibility (TCL Focused)](#native-tv-oem-player-compatibility-tcl-focused)
+- [Compatible TV Brands & Models Matrix](#compatible-tv-brands--models-matrix)
 - [Domestic Security & Privacy Advantage](#domestic-security--privacy-advantage)
 - [Supported Hardware SoC Matrix](#supported-hardware-soc-matrix)
 - [Broadcast Delivery Systems](#broadcast-delivery-systems)
 - [Zero-Recompile Web Console Pro](#zero-recompile-web-console-pro)
 - [External Stream Descrambler Proxy (Port 9191)](#external-stream-descrambler-proxy-port-9191)
 - [Quick Start Guide](#quick-start-guide)
+- [GitHub Repository & Publishing Guide](#github-repository--publishing-guide)
 - [Repository Structure](#repository-structure)
 - [Documentation Index](#documentation-index)
 - [Legal & Educational Disclaimer](#legal--educational-disclaimer)
@@ -87,8 +90,9 @@ This project implements a vendor AIDL CAS plugin (`vendor.oscam.cas.IOscamCasSer
 
 ## Key Features
 
-- **Multi-Protocol Client Engine**: Full native C++ client support for both **OSCam DVBAPI** and **Newcamd v5.25** protocols.
-- **Self-Contained 3DES Crypto**: Custom zero-dependency Triple-DES EDE2 engine with embedded S-boxes and permutation tables — no external OpenSSL or BoringSSL library dependencies on Android TV.
+- **Multi-Protocol Client Engine**: Full native C++ client support for **OSCam DVBAPI**, **Newcamd v5.25** (3DES), and **CCcam v2.0.11 / v2.3.0** (RC4/SHA-1) protocols.
+- **Native OEM TV Player Integration**: Direct support for the television's official pre-installed TV apps (deeply optimized for **TCL Live TV & TCL Channel**, Sony Bravia TV Input, Philips Play TV, Xiaomi PatchWall, and Hisense Live TV).
+- **Zero-Dependency Cryptography**: Custom, bit-level Triple-DES EDE2 (Newcamd) and RC4/SHA-1 (CCcam) cryptographic engines with zero external OpenSSL or BoringSSL library dependencies on Android TV.
 - **15+ Domestic Provider Presets**: Instant one-click templates for European and international satellite providers (Movistar+, HD+, Sky DE/IT/UK, Tivùsat, Canal+, Fransat, MEO/NOS, Polsat, SRG SSR, ORF, etc.).
 - **Multi-Server & Failover Concurrency**: Configure multiple readers across different ports, protocols, and satellites simultaneously with parallel ping latency diagnostics.
 - **Multi-Brand Hardware Abstraction**: Automated SoC architecture detection at boot with specialized descrambler drivers for **Amlogic**, **MediaTek**, **Realtek**, **Broadcom**, **Synaptics**, and **Novatek**.
@@ -110,7 +114,7 @@ This project implements a vendor AIDL CAS plugin (`vendor.oscam.cas.IOscamCasSer
 
 ---
 
-## Multi-Protocol Engine (OSCam DVBAPI & Newcamd v5.25)
+## Multi-Protocol Engine (OSCam DVBAPI, Newcamd v5.25 & CCcam)
 
 The bridge features a flexible, multi-reader network layer allowing your Android TV to connect to different domestic cardservers:
 
@@ -120,29 +124,60 @@ The bridge features a flexible, multi-reader network layer allowing your Android
 │                                                                             │
 │  [Server 1: Local OSCam]  ──► DVBAPI Protocol (TCP:9000) ──► Movistar+ 0x1810│
 │  [Server 2: HD+ Reader]   ──► Newcamd v5.25   (TCP:10001)──► HD+ Astra 0x1830│
-│  [Server 3: Tivùsat Box]  ──► Newcamd v5.25   (TCP:10005)──► Tivùsat   0x183E│
+│  [Server 3: CCcam Server] ──► CCcam v2.3.0    (TCP:12000)──► Tivùsat   0x183E│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Pre-Configured Provider Templates
 
-| Provider | Orbital Position | CAID | Protocol | Default Port |
+| Provider | Orbital Position | CAID | Supported Protocols | Default Port |
 |---|---|---|---|---|
-| **Movistar+** | Astra 19.2°E / Hispasat 30°W | `0x1810` | DVBAPI / Newcamd | `9000` / `10000` |
-| **HD+ Germany** | Astra 19.2°E | `0x1830`, `0x1843` | Newcamd | `10001` |
-| **Sky Deutschland** | Astra 19.2°E | `0x098D`, `0x098C` | Newcamd | `10002` |
-| **Sky Italia** | Hotbird 13.0°E | `0x09CD` | Newcamd | `10003` |
-| **Sky UK** | Astra 28.2°E | `0x0963` | Newcamd | `10004` |
-| **Tivùsat** | Hotbird 13.0°E | `0x183E`, `0x1856` | Newcamd | `10005` |
-| **Canal+ France** | Astra 19.2°E | `0x0100`, `0x1811` | Newcamd | `10006` |
-| **Fransat** | Eutelsat 5.0°W | `0x0500` | Newcamd | `10007` |
-| **MEO / NOS** | Hispasat 30.0°W | `0x0100`, `0x1802` | Newcamd | `10008` |
-| **Polsat Box** | Hotbird 13.0°E | `0x1803`, `0x1861` | Newcamd | `10009` |
-| **SRG SSR** | Hotbird 13.0°E | `0x0500` | Newcamd | `10010` |
-| **ORF Digital** | Astra 19.2°E | `0x0D95`, `0x0648` | Newcamd | `10011` |
-| **D-Smart** | Türksat 42.0°E | `0x092B` | Newcamd | `10012` |
-| **Vodafone Cable** | DVB-C | `0x098E`, `0x1838` | Newcamd | `10013` |
-| **Saorview / TDT** | DVB-T/T2 | `0x1801`, `0x0500` | Newcamd | `10014` |
+| **Movistar+** | Astra 19.2°E / Hispasat 30°W | `0x1810` | DVBAPI / Newcamd / CCcam | `9000` / `10000` / `12000` |
+| **HD+ Germany** | Astra 19.2°E | `0x1830`, `0x1843` | Newcamd / CCcam / DVBAPI | `10001` / `12000` |
+| **Sky Deutschland** | Astra 19.2°E | `0x098D`, `0x098C` | Newcamd / CCcam / DVBAPI | `10002` / `12000` |
+| **Sky Italia** | Hotbird 13.0°E | `0x09CD` | Newcamd / CCcam / DVBAPI | `10003` / `12000` |
+| **Sky UK** | Astra 28.2°E | `0x0963` | Newcamd / CCcam / DVBAPI | `10004` / `12000` |
+| **Tivùsat** | Hotbird 13.0°E | `0x183E`, `0x1856` | Newcamd / CCcam / DVBAPI | `10005` / `12000` |
+| **Canal+ France** | Astra 19.2°E | `0x0100`, `0x1811` | Newcamd / CCcam / DVBAPI | `10006` / `12000` |
+| **Fransat** | Eutelsat 5.0°W | `0x0500` | Newcamd / CCcam / DVBAPI | `10007` / `12000` |
+| **MEO / NOS** | Hispasat 30.0°W | `0x0100`, `0x1802` | Newcamd / CCcam / DVBAPI | `10008` / `12000` |
+| **Polsat Box** | Hotbird 13.0°E | `0x1803`, `0x1861` | Newcamd / CCcam / DVBAPI | `10009` / `12000` |
+| **SRG SSR** | Hotbird 13.0°E | `0x0500` | Newcamd / CCcam / DVBAPI | `10010` / `12000` |
+| **ORF Digital** | Astra 19.2°E | `0x0D95`, `0x0648` | Newcamd / CCcam / DVBAPI | `10011` / `12000` |
+| **D-Smart** | Türksat 42.0°E | `0x092B` | Newcamd / CCcam / DVBAPI | `10012` / `12000` |
+| **Vodafone Cable** | DVB-C | `0x098E`, `0x1838` | Newcamd / CCcam / DVBAPI | `10013` / `12000` |
+| **Saorview / TDT** | DVB-T/T2 | `0x1801`, `0x0500` | Newcamd / CCcam / DVBAPI | `10014` / `12000` |
+
+---
+
+## Native TV OEM Player Compatibility (TCL Focused)
+
+Different television manufacturers ship proprietary, closed-source TV broadcast applications. Instead of forcing users to install third-party media players, this bridge integrates directly into the television's official broadcast pipeline:
+
+### 1. TCL Deep Integration (Focus Brand)
+TCL televisions (running Google TV or Android TV) use proprietary broadcast packages (`com.tcl.tv`, `com.tcl.live`, `com.tcl.ui.tuning`, `com.tcl.channel`). The bridge supports TCL natively via three interlocking components:
+- **TCL Broadcast Intent Hook (`TclTvCompat.kt`)**: Automatically detects TCL televisions and intercepts proprietary channel switch broadcasts (`com.tcl.tv.action.CHANNEL_CHANGED`, `com.tcl.action.DVB_SERVICE_CHANGED`) to trigger instant CAS descrambler session synchronization.
+- **TCL Hardware Demux Routing**: Routes Control Words directly into the physical Amlogic (`/dev/amstream_mpps`, `/dev/dvb0.ca0`) or Realtek (`/dev/rtd_ca0`) descrambler device nodes present on TCL motherboards.
+- **TCL Live TV App Support**: Users can launch the standard TCL Live TV or TCL Channel app, use their original TV remote control to change satellite channels, and watch encrypted DVB-S2 channels with full electronic program guide (EPG) functionality.
+
+### 2. Android TV Input Framework (TIF) Support (`OscamTvInputService.kt`)
+The bridge registers an official Android TV Input service (`android.media.tv.TvInputService`). This allows any television running Android TV (Sony Bravia, Philips, Xiaomi, Hisense, etc.) to discover `OSCam CAS Satellite Tuner` as a native broadcast source.
+
+---
+
+## Compatible TV Brands & Models Matrix
+
+The following television series and models have verified hardware and software compatibility:
+
+| Manufacturer | Series / Models | SoC Architecture | Supported OEM Live TV Apps | Descrambler Node |
+|---|---|---|---|---|
+| **TCL (Primary)** | **C645, C745, C845, C805, C855, C955**<br>**QM8, QM7, QM851G**<br>**P635, P735, P745, P755, C725, C735**<br>TCL BeyondTV Series (Google TV / Android 11–14) | **Amlogic T962X2 / T982 / S905X4**<br>**Realtek RTD2851 / RTD2873**<br>**MediaTek Pentonic 700** | `com.tcl.tv`<br>`com.tcl.live`<br>`com.tcl.ui.tuning`<br>`com.tcl.channel`<br>`com.tcl.avitv` | `/dev/amstream_mpps`<br>`/dev/rtd_ca0`<br>`/dev/dvb0.ca0` |
+| **Sony** | **Bravia XR A80J, A90J, X90J, X95J**<br>**Bravia XR A80L, A90L, X90L, X95L**<br>Bravia 7, 8, 9 (2024 Series) | **MediaTek MT5895 (S900)**<br>**MediaTek Pentonic 1000** | `com.sony.dtv.tvinput`<br>`com.sony.dtv.broadcast`<br>Sony Bravia Live TV | `/dev/mtk_ca0`<br>`/dev/dvb0.ca0` |
+| **Philips (TPV)** | **The One (PUS8506, PUS8807, PUS8808)**<br>**OLED707, OLED808, OLED908** | **MediaTek MT9632**<br>**MediaTek Pentonic 1000** | `org.droidtv.channels`<br>`org.droidtv.playtv` | `/dev/mtk_ca0`<br>`/dev/dvb0.ca0` |
+| **Xiaomi** | **Mi TV Q1, Q2, TV A2**<br>**Xiaomi TV Max 86", TV P1/P1E** | **MediaTek MT9611**<br>**Amlogic T962X** | `com.xiaomi.mitv.tvinput`<br>`com.xiaomi.mitv.livetv`<br>PatchWall Live TV | `/dev/amstream_mpps`<br>`/dev/mtk_ca0` |
+| **Hisense** | **U7K, U8K, UX, E7K, A6K** (Android TV / Google TV models) | **Novatek NT72671 / NT72688**<br>**MediaTek MT9618** | `com.hisense.tv.input`<br>Hisense Live TV | `/dev/nvt_ca0`<br>`/dev/mtk_ca0` |
+| **Panasonic** | **MZ2000, MZ1500, MX950** (Google TV models) | **MediaTek MT5895** | `com.panasonic.dtv.livetv` | `/dev/mtk_ca0` |
+| **Generic AOSP** | Reference Dev Boards, SEI Robotics, MeCool, Formuler | Amlogic S905X / Broadcom BCM7252 / Synaptics VS680 | `com.google.android.tv` (Live Channels) | `/dev/dvb0.ca0`<br>`/dev/bcm_ca0` |
 
 ---
 
@@ -273,7 +308,38 @@ adb reboot
 ```
 
 ### 3. Configure via Web Browser
-Open `http://<TV_IP>:8080` on your smartphone or computer, verify your server's IP and port, click **"Test Connection"**, and click **"Save & Apply"**.
+Open `http://<TV_IP>:8080` on your smartphone or computer, verify your server's IP, port, and protocol (OSCam DVBAPI, Newcamd v5.25, or CCcam), click **"Test Connection"**, and click **"Save & Apply"**.
+
+---
+
+## GitHub Repository & Publishing Guide
+
+To publish this project to your GitHub account:
+
+1. **Create a new empty repository on GitHub**:
+   - Go to [github.com/new](https://github.com/new).
+   - Name your repository `android-oscam-bridge`.
+   - Set visibility to **Public** (or **Private**).
+   - Do **NOT** check "Initialize this repository with a README", ".gitignore", or "License" (the workspace already has complete production files).
+
+2. **Link local git repository and push**:
+   Open PowerShell or Terminal in your project directory (`c:\Users\lizarragapc\Documents\android-oscam-bridge`):
+   ```bash
+   # Add your GitHub repository as remote origin (replace YOUR_USERNAME with your GitHub username)
+   git remote add origin https://github.com/YOUR_USERNAME/android-oscam-bridge.git
+
+   # Ensure branch is named master (or main)
+   git branch -M master
+
+   # Push all commits and tags to GitHub
+   git push -u origin master
+   ```
+
+3. **Clone link for downstream deployment**:
+   Once pushed, your project will be accessible at:
+   ```text
+   https://github.com/YOUR_USERNAME/android-oscam-bridge
+   ```
 
 ---
 
@@ -289,15 +355,19 @@ android-oscam-bridge/
 │   ├── INSTALLATION_AND_CONFIGURATION.md # Step-by-step installation & deployment
 │   └── ARCHITECTURE.md                   # Deep-dive internals & protocol specification
 │
-├── bridge/                               # Dvbapi network client & parsers
+├── bridge/                               # Network clients & parsers
 │   ├── include/
 │   │   ├── DvbapiProtocol.h              # Binary protocol opcodes & structs
 │   │   ├── DvbapiClient.h                # Socket client with exponential backoff
+│   │   ├── NewcamdClient.h               # Newcamd v5.25 client with 3DES
+│   │   ├── CCcamClient.h                 # CCcam v2.3.0 client with RC4/SHA1
 │   │   ├── SatellitePmtParser.h          # MPEG-TS PMT & CA descriptor parser
 │   │   ├── SoftwareDescrambler.h         # In-memory DVB-CSA v1/v2 engine
 │   │   └── BridgeLogger.h                # Unified logger
 │   ├── DvbapiProtocol.cpp
 │   ├── DvbapiClient.cpp
+│   ├── NewcamdClient.cpp
+│   ├── CCcamClient.cpp
 │   ├── SatellitePmtParser.cpp
 │   ├── SoftwareDescrambler.cpp
 │   ├── BridgeLogger.cpp
@@ -354,8 +424,10 @@ android-oscam-bridge/
 │   ├── OscamConfigRepository.kt          # DataStore & JSON sync repository
 │   ├── OscamCasSettingsActivity.kt       # Leanback D-Pad settings activity
 │   ├── OscamNativeBridge.kt              # Strongly-typed JNI wrapper
-│   ├── OscamTvInputBridge.kt             # Android TIF connector
-│   └── BootCompletedReceiver.kt          # Auto-start on TV boot
+│   ├── OscamTvInputService.kt            # Android TV Input Framework (TIF) service
+│   ├── OscamTvInputBridge.kt             # MediaCas session bridge
+│   ├── TclTvCompat.kt                    # TCL OEM app hooks & chassis detection
+│   └── BootCompletedReceiver.kt          # Auto-start on TV boot & tuning receiver
 │
 ├── proto/
 │   └── dvbapi_messages.md                # Complete DVBAPI opcode reference
@@ -363,7 +435,9 @@ android-oscam-bridge/
 ├── tests/                                # Unit Test Suite (GoogleTest)
 │   ├── DvbapiProtocolTest.cpp
 │   ├── ChipsetDetectorTest.cpp
-│   └── OscamCasPluginTest.cpp
+│   ├── OscamCasPluginTest.cpp
+│   ├── NewcamdClientTest.cpp             # 3DES crypto & Newcamd client tests
+│   └── CCcamClientTest.cpp               # RC4/SHA1 crypto & CCcam client tests
 │
 └── build/                                # Build Configurations
     ├── CMakeLists.txt

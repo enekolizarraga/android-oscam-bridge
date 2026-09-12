@@ -222,3 +222,4 @@ TEST(NewcamdClientLifecycleTest, TestConnectionFailsGracefullyOnInvalidTarget) {
     EXPECT_FALSE(ok);
     EXPECT_FALSE(error.empty());
 }
+

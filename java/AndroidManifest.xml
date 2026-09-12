@@ -54,7 +54,21 @@
             android:exported="false"
             android:foregroundServiceType="specialUse" />
 
-        <!-- Receptor de inicio en el encendido de la TV -->
+        <!-- Android TV Input Framework (TIF) Service para Apps de Reproduccion OEM (TCL, Sony, Philips, Xiaomi) -->
+        <service
+            android:name=".OscamTvInputService"
+            android:permission="android.permission.BIND_TV_INPUT"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.media.tv.TvInputService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.media.tv.input"
+                android:resource="@xml/tv_input_service" />
+        </service>
+
+        <!-- Receptor de inicio y eventos de sintonia OEM (TCL Live TV, etc.) -->
         <receiver
             android:name=".BootCompletedReceiver"
             android:enabled="true"
@@ -63,6 +77,8 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.tcl.tv.action.CHANNEL_CHANGED" />
+                <action android:name="com.tcl.action.DVB_SERVICE_CHANGED" />
             </intent-filter>
         </receiver>
 

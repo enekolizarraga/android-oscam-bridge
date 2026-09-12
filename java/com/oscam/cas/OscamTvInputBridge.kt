@@ -34,6 +34,32 @@ class OscamTvInputBridge(private val context: Context) {
 
     private var mediaCasInstance: MediaCas? = null
     private var activeSession: MediaCas.Session? = null
+    private var tclReceiver: android.content.BroadcastReceiver? = null
+
+    init {
+        // Automatically register TCL-specific broadcast hooks if running on a TCL TV
+        if (TclTvCompat.detectTvBrand() == TclTvCompat.TvBrand.TCL) {
+            Log.i(TAG, "TCL TV detected: ${TclTvCompat.getTclModelDetails()}. Initializing OEM hooks...")
+            tclReceiver = TclTvCompat.registerTclChannelListener(context) { details ->
+                Log.i(TAG, "OscamTvInputBridge handling TCL event: $details")
+            }
+        }
+    }
+
+    /**
+     * Gets detected TV brand name.
+     */
+    fun getTvBrand(): TclTvCompat.TvBrand = TclTvCompat.detectTvBrand()
+
+    /**
+     * Gets TV model details.
+     */
+    fun getModelDetails(): String = TclTvCompat.getTclModelDetails()
+
+    /**
+     * Inspects OEM broadcast TV apps installed on this television.
+     */
+    fun getOemApps(): List<TclTvCompat.OemAppInfo> = TclTvCompat.inspectInstalledOemApps(context)
 
     /**
      * Checks if Android MediaCas framework recognizes the specified CAID.

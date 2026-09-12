@@ -101,6 +101,23 @@ keepalive                     = 1
 mgclient                      = 0
 ```
 
+### Option C: CCcam v2.0.11 / v2.3.0 Protocol (`oscam.conf [cccam]` or native CCcam server)
+CCcam uses RC4 stream cipher and SHA-1 node challenge handshakes over a single TCP port (typically 12000):
+
+```ini
+[cccam]
+port                          = 12000
+version                       = 2.3.0
+reshare                       = 1
+stealth                       = 1
+nodeid                        = 0102030405060708
+```
+
+Or on an original CCcam standalone server (`CCcam.cfg`):
+```text
+F: android_tv android_tv 2 0 1 { 0:0:2 }
+```
+
 ### Matching User Account (`oscam.user`)
 Create the matching user account in `oscam.user`:
 
@@ -475,5 +492,38 @@ Before troubleshooting specific issues, run through this 5-point verification ch
 - **Solution**:
   In VLC or Kodi, increase the network cache buffer to 1000ms:
   `vlc --network-caching=1000 "http://<TV_IP>:9191/play?url=..."`.
+
+---
+
+## 12. Native TV Playback Apps & TCL Integration Guide
+
+For the best user experience, users do not need to install VLC or Kodi for broadcast viewing. The bridge enables descrambling directly within the **official TV app pre-installed by the manufacturer**.
+
+### Step-by-Step Setup on TCL Televisions (Google TV / Android TV)
+
+Verified on **TCL C645, C745, C845, C805, QM8, QM7, P635, P735, C725, C735**:
+
+1. **Connect Satellite LNB**:
+   - Plug your satellite dish coaxial cable into the **"ANT/CABLE IN (SATELLITE)"** F-connector on the back of your TCL television.
+2. **Perform Channel Scan in Native TCL TV Settings**:
+   - Open TCL Settings ➔ **Channels & Inputs** ➔ **Channels** ➔ **Channel Scan**.
+   - Select **Satellite (DVB-S/S2)**.
+   - Select your satellite orbital position (e.g. `Astra 19.2°E` or `Hispasat 30°W`).
+   - Run Full or Fast Scan. All FTA and encrypted transponders are saved into the TCL channel database.
+3. **Configure the CAS Bridge Server Profile**:
+   - Open `http://<TV_IP>:8080` from your phone or PC.
+   - Click the provider preset button (e.g. `Movistar+` or `HD+`).
+   - Choose your server protocol:
+     - **OSCam (dvbapi)**: Port 9000
+     - **Newcamd v5.25**: Port 10000+, DES key `0102030405060708091011121314`
+     - **CCcam 2.3.0**: Port 12000, user & password
+   - Click **"Test Connection"** to verify ping and handshake latency.
+   - Click **"Save & Apply Changes"**.
+4. **Watch Encrypted Satellite Channels in TCL Live TV**:
+   - Launch the standard **TCL Live TV** or **TCL Channel** app from the TV launcher.
+   - Select any encrypted channel from your satellite lineup.
+   - The bridge intercepts the tuning event (`com.tcl.tv.action.CHANNEL_CHANGED`), retrieves the resolved Control Words from your cardserver, and writes them straight into `/dev/amstream_mpps` (or `/dev/rtd_ca0`).
+   - Picture and sound unlock instantly without any lag, maintaining full 4K HDR/Dolby Vision video quality and native TV remote control navigation.
+
 
 

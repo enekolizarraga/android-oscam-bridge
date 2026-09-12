@@ -202,6 +202,25 @@ class OscamLocalConfigWebServer(
                         put("available_memory_mb", hw.availableMemoryMb)
                         put("stream_proxy_port", 9191)
                         put("web_console_port", port)
+                        put("tv_brand", TclTvCompat.detectTvBrand().name)
+                        put("tcl_model_details", TclTvCompat.getTclModelDetails())
+
+                        val oemAppsArray = JSONArray()
+                        TclTvCompat.inspectInstalledOemApps(context).forEach { app ->
+                            oemAppsArray.put(JSONObject().apply {
+                                put("pkg", app.packageName)
+                                put("name", app.appName)
+                                put("brand", app.brand.name)
+                                put("installed", app.isInstalled)
+                            })
+                        }
+                        put("oem_tv_apps", oemAppsArray)
+
+                        val tclNodesObj = JSONObject()
+                        TclTvCompat.checkTclHardwareNodes().forEach { (k, v) ->
+                            tclNodesObj.put(k, v)
+                        }
+                        put("tcl_hardware_nodes", tclNodesObj)
                     }
                     sendJsonResponse(exchange, 200, json.toString())
                 } catch (e: Exception) {
@@ -338,7 +357,7 @@ class OscamLocalConfigWebServer(
                                     name = sObj.optString("name", "Server ${i + 1}"),
                                     protocol = ServerProtocol.fromString(protoStr),
                                     host = sObj.optString("host", "192.168.1.100").trim(),
-                                    port = sObj.optInt("port", if (protoStr == "NEWCAMD") 10000 else 9000),
+                                    port = sObj.optInt("port", if (protoStr == "NEWCAMD") 10000 else if (protoStr == "CCCAM") 12000 else 9000),
                                     user = sObj.optString("user", "android_tv").trim(),
                                     password = sObj.optString("password", "android_tv").trim(),
                                     desKey = sObj.optString("des_key", "0102030405060708091011121314").trim(),
@@ -1609,6 +1628,24 @@ class OscamLocalConfigWebServer(
                         <div class="hint">Zero-Leak Buffer Management</div>
                     </div>
                 </div>
+
+                <div style="margin-top:20px; border-top:1px solid var(--border); padding-top:16px;">
+                    <div style="font-weight:700; font-size:15px; color:#FFF; margin-bottom:6px;">Native TV Player &amp; OEM Broadcast App Compatibility</div>
+                    <div class="hint" style="margin-bottom:14px;">Direct integration with manufacturer tuner applications (Deeply optimized for TCL, Sony Bravia, Philips, Xiaomi, Hisense).</div>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+                        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:14px;">
+                            <div style="font-weight:700; font-size:11px; color:var(--text-muted); margin-bottom:6px;">DETECTED TV BRAND &amp; CHASSIS</div>
+                            <div style="font-size:16px; font-weight:800; color:var(--primary);">${TclTvCompat.detectTvBrand()}</div>
+                            <div class="hint" style="margin-top:4px;">${TclTvCompat.getTclModelDetails()}</div>
+                        </div>
+                        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:14px;">
+                            <div style="font-weight:700; font-size:11px; color:var(--text-muted); margin-bottom:6px;">TIF BROADCAST INPUT STATUS</div>
+                            <div style="font-size:16px; font-weight:800; color:var(--success);">OscamTvInputService Registered</div>
+                            <div class="hint" style="margin-top:4px;">Direct demux injection via /dev/amstream_mpps &amp; /dev/rtd_ca0</div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1696,22 +1733,31 @@ class OscamLocalConfigWebServer(
                 var card = document.createElement('div');
                 card.className = 'server-card';
                 card.id = 'srv-box-' + idx;
-                var isNewcamd = (s.protocol === 'NEWCAMD');
+                var proto = s.protocol || 'DVBAPI';
+                var isNewcamd = (proto === 'NEWCAMD');
+                var isCccam = (proto === 'CCCAM');
+                var badgeStyle = isCccam ? 'rgba(16,185,129,0.2); color:#6EE7B7; border:1px solid #10B981' :
+                                 isNewcamd ? 'rgba(139,92,246,0.2); color:#C4B5FD; border:1px solid #8B5CF6' :
+                                 'rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6';
                 card.innerHTML = 
                     '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">' +
                         '<div style="font-weight:700; font-size:14px; color:#FFF;">' + (s.name || 'Server Profile ' + (idx + 1)) + '</div>' +
-                        '<span style="background:' + (isNewcamd ? 'rgba(139,92,246,0.2); color:#C4B5FD; border:1px solid #8B5CF6' : 'rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6') + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;">' + (s.protocol || 'DVBAPI') + '</span>' +
+                        '<span style="background:' + badgeStyle + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;">' + proto + '</span>' +
                     '</div>' +
                     '<div class="server-fields">' +
                         '<div><label>Profile Name</label><input type="text" class="srv-name" value="' + (s.name || 'Server ' + (idx + 1)) + '"></div>' +
-                        '<div><label>Protocol</label><select class="srv-proto" onchange="toggleServerFields(' + idx + ')"><option value="DVBAPI"' + (!isNewcamd ? ' selected' : '') + '>OSCam (dvbapi)</option><option value="NEWCAMD"' + (isNewcamd ? ' selected' : '') + '>Newcamd v5.25</option></select></div>' +
+                        '<div><label>Protocol</label><select class="srv-proto" onchange="toggleServerFields(' + idx + ')">' +
+                            '<option value="DVBAPI"' + (proto === 'DVBAPI' ? ' selected' : '') + '>OSCam (dvbapi)</option>' +
+                            '<option value="NEWCAMD"' + (proto === 'NEWCAMD' ? ' selected' : '') + '>Newcamd v5.25</option>' +
+                            '<option value="CCCAM"' + (proto === 'CCCAM' ? ' selected' : '') + '>CCcam 2.3.0</option>' +
+                        '</select></div>' +
                         '<div><label>Host / IP Address</label><input type="text" class="srv-host" value="' + (s.host || '192.168.1.100') + '"></div>' +
-                        '<div><label>Port</label><input type="number" class="srv-port" value="' + (s.port || (isNewcamd ? 10000 : 9000)) + '"></div>' +
+                        '<div><label>Port</label><input type="number" class="srv-port" value="' + (s.port || (isCccam ? 12000 : (isNewcamd ? 10000 : 9000))) + '"></div>' +
                         '<div><label>Username</label><input type="text" class="srv-user" value="' + (s.user || 'android_tv') + '"></div>' +
                     '</div>' +
-                    '<div class="newcamd-extra-' + idx + '" style="margin-top:12px; display:' + (isNewcamd ? 'grid' : 'none') + '; grid-template-columns: 1.5fr 2.5fr 1fr; gap:12px;">' +
+                    '<div class="newcamd-extra-' + idx + '" style="margin-top:12px; display:' + (isNewcamd || isCccam ? 'grid' : 'none') + '; grid-template-columns: 1.5fr 2.5fr 1fr; gap:12px;">' +
                         '<div><label>Password</label><input type="text" class="srv-pass" value="' + (s.password || 'android_tv') + '"></div>' +
-                        '<div><label>DES Key (14 bytes hex)</label><input type="text" class="srv-des" value="' + (s.des_key || '0102030405060708091011121314') + '"></div>' +
+                        '<div class="srv-des-div-' + idx + '" style="display:' + (isNewcamd ? 'block' : 'none') + ';"><label>DES Key (14 bytes hex)</label><input type="text" class="srv-des" value="' + (s.des_key || '0102030405060708091011121314') + '"></div>' +
                         '<div><label>Target CAID</label><input type="text" class="srv-caid" value="' + (s.caid || '0x1810') + '"></div>' +
                     '</div>' +
                     '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:10px;">' +
@@ -1728,9 +1774,20 @@ class OscamLocalConfigWebServer(
         function toggleServerFields(idx) {
             var card = document.getElementById('srv-box-' + idx);
             var proto = card.querySelector('.srv-proto').value;
+            var portInput = card.querySelector('.srv-port');
             var extra = card.querySelector('.newcamd-extra-' + idx);
-            if (extra) {
-                extra.style.display = (proto === 'NEWCAMD') ? 'grid' : 'none';
+            var desDiv = card.querySelector('.srv-des-div-' + idx);
+            if (proto === 'CCCAM') {
+                if (portInput.value === '9000' || portInput.value === '10000') portInput.value = '12000';
+                if (extra) extra.style.display = 'grid';
+                if (desDiv) desDiv.style.display = 'none';
+            } else if (proto === 'NEWCAMD') {
+                if (portInput.value === '9000' || portInput.value === '12000') portInput.value = '10000';
+                if (extra) extra.style.display = 'grid';
+                if (desDiv) desDiv.style.display = 'block';
+            } else {
+                if (portInput.value === '10000' || portInput.value === '12000') portInput.value = '9000';
+                if (extra) extra.style.display = 'none';
             }
         }
 

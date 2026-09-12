@@ -24,6 +24,7 @@ add_library(oscam_bridge STATIC
     bridge/DvbapiProtocol.cpp
     bridge/DvbapiClient.cpp
     bridge/NewcamdClient.cpp
+    bridge/CCcamClient.cpp
     bridge/SatellitePmtParser.cpp
     bridge/SoftwareDescrambler.cpp
 )
@@ -186,12 +187,23 @@ if(NOT ANDROID)
         GTest::gtest_main
     )
 
+    # Tests CCcam v2.3.0 Client & RC4/SHA1 Crypto
+    add_executable(cccam_tests
+        tests/CCcamClientTest.cpp
+    )
+    target_link_libraries(cccam_tests PRIVATE
+        oscam_bridge
+        GTest::gtest
+        GTest::gtest_main
+    )
+
     enable_testing()
     include(GoogleTest)
     gtest_discover_tests(protocol_tests)
     gtest_discover_tests(chipset_tests)
     gtest_discover_tests(hal_tests)
     gtest_discover_tests(newcamd_tests)
+    gtest_discover_tests(cccam_tests)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,18 @@ class BootCompletedReceiver : BroadcastReceiver() {
                     Log.e(TAG, "Error in BootCompletedReceiver: ${e.message}", e)
                 }
             }
+        } else if ("com.tcl.tv.action.CHANNEL_CHANGED" == action ||
+                   "com.tcl.action.DVB_SERVICE_CHANGED" == action) {
+            Log.i(TAG, "TCL Live TV Channel switch event intercepted: $action")
+            // Ensure background descrambling service is awake and active
+            try {
+                val serviceIntent = Intent(context, OscamCasBinderService::class.java).apply {
+                    this.action = OscamCasBinderService.ACTION_RELOAD
+                }
+                context.startService(serviceIntent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not notify OscamCasBinderService of TCL channel change: ${e.message}")
+            }
         }
     }
 }

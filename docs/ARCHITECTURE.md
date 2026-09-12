@@ -363,4 +363,78 @@ A central design goal of this project is providing television owners with a clea
    - Subscriptions and keys remain strictly in memory and are written directly to the TV SoC's hardware descrambler registers (`/dev/amstream_mpps`, `/dev/mtk_ca0`, etc.).
    - No decrypted transport streams or keys are persisted to disk or transmitted to external endpoints.
 
+---
+
+## 11. CCcam v2.0.11 / v2.3.0 Protocol Architecture
+
+The bridge includes a native C++ CCcam client (`bridge/CCcamClient.cpp`) for interoperability with domestic CCcam cardsharing servers.
+
+```
+                  ┌──────────────────────────────────────────────┐
+                  │                 CCcamClient                  │
+                  └──────────────────────┬───────────────────────┘
+                                         │
+                    ┌────────────────────┴────────────────────┐
+                    ▼                                         ▼
+         [RC4 Stream Cipher Engine]                 [SHA-1 Digest Engine]
+         - 256-byte internal S-box                  - RFC 3174 / FIPS 180-1 compliant
+         - KSA: key schedule permutation            - 512-bit message block scheduling
+         - PRGA: on-the-fly byte keystream          - 160-bit node challenge digest
+```
+
+### Handshake & Cryptographic Sequence:
+1. **Initial Vector Reception**: Server sends a 16-byte random IV ($IV_{srv}$) upon socket connection.
+2. **Key Derivation & Challenge**:
+   - Client calculates $\text{Digest} = \text{SHA1}(IV_{srv})$.
+   - Initializes separate RC4 cipher states for transmission (`sendRc4`) and reception (`recvRc4`).
+   - Encrypts $IV_{srv}$ with `sendRc4` and transmits the 16-byte challenge response back to the server.
+3. **Authentication Packet**:
+   - Client transmits a 34-byte encrypted credentials payload:
+     - Username (20 bytes, null-padded)
+     - Client Node ID (8 bytes, random 64-bit identifier)
+     - Client Version string ("2.3.0\0", 6 bytes)
+4. **Server Acknowledgement**: Server decrypts credentials and returns its 8-byte Server Node ID.
+5. **ECM Frame Protocol (`MSG_CW_ECM`)**:
+   - Frame Header (4 bytes): `[0x01 (Opcode), Length MSB, Length LSB, Parity]`
+   - Frame Payload: `[CAID (2B), ProvID (4B), ServiceID (2B), Raw ECM Bytes]`
+   - Decrypted response delivers 16 bytes: 8-byte Even Control Word and 8-byte Odd Control Word.
+6. **Keepalive**: Periodic 4-byte `MSG_KEEPALIVE` (`0x06`) ping every 45 seconds to keep the socket alive.
+
+---
+
+## 12. Android TV Input Framework (TIF) & TCL OEM Playback Architecture
+
+To allow seamless descrambling inside the television's native pre-installed TV broadcast app without installing secondary players:
+
+```
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                    TCL Android TV / Google TV OS                       │
+ │                                                                        │
+ │  [Native TCL Live TV App] (com.tcl.tv / com.tcl.channel)               │
+ │           │                                                            │
+ │           ├── Broadcast Intent (com.tcl.tv.action.CHANNEL_CHANGED)     │
+ │           │                                                            │
+ │           ▼                                                            │
+ │  [TclTvCompat / BootCompletedReceiver]                                 │
+ │           │                                                            │
+ │           ▼                                                            │
+ │  [OscamTvInputService (android.media.tv.TvInputService)]               │
+ │           │                                                            │
+ │           ▼                                                            │
+ │  [OscamTvInputBridge] ──► [MediaCas Framework] ──► [OscamCasPlugin]    │
+ │                                                            │           │
+ │                                                            ▼           │
+ │                 Inject Control Words (CW) ─────────────────┘           │
+ │                 into Hardware Descrambler Nodes:                       │
+ │                 - Amlogic SoC: /dev/amstream_mpps, /dev/dvb0.ca0       │
+ │                 - Realtek SoC: /dev/rtd_ca0                            │
+ │                                                                        │
+ └────────────────────────────────────────────────────────────────────────┘
+```
+
+1. **`OscamTvInputService`**: Implements Android's official `TvInputService` abstract class. Exposes the bridge as an input provider in the TV channel lineup.
+2. **`TclTvCompat`**: Inspects television brand properties (`ro.product.brand`, `ro.tcl.model`). Hooks into TCL-specific tuning lifecycle broadcasts to synchronize active CAS sessions when users browse channels with the physical TV remote control.
+3. **Hardware Demux Handover**: Control Words are written directly into the kernel character device nodes of the host SoC, allowing the TV hardware video pipeline (VPU) to decode 4K HDR streams at 60 FPS with zero CPU overhead.
+
+
 

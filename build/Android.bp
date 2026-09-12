@@ -21,6 +21,7 @@ cc_library_static {
         "bridge/DvbapiProtocol.cpp",
         "bridge/DvbapiClient.cpp",
         "bridge/NewcamdClient.cpp",
+        "bridge/CCcamClient.cpp",
         "bridge/SatellitePmtParser.cpp",
         "bridge/SoftwareDescrambler.cpp",
     ],
