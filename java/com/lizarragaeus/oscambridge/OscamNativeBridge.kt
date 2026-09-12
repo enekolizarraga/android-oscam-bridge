@@ -1,4 +1,4 @@
-package 
+package com.lizarragaeus.oscambridge
 
 import android.util.Log
 

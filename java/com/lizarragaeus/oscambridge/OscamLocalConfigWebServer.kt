@@ -707,7 +707,7 @@ class OscamLocalConfigWebServer(
                     // 1. Try protocol-level test via NativeBridge if available
                     try {
                         val testRes = OscamNativeBridge.nativeTestConnectionEx(
-                            host, port, parsedProto.protocolId, user, password, desKey, 3000
+                            host, port, parsedProto.id, user, password, desKey, 3000
                         )
                         if (testRes.isNotEmpty()) {
                             protocolDetail = testRes

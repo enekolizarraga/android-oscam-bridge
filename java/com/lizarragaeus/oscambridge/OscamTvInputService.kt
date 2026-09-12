@@ -1,6 +1,7 @@
 package com.lizarragaeus.oscambridge
 
 import android.content.Context
+import android.media.tv.TvInputManager
 import android.media.tv.TvInputService
 import android.net.Uri
 import android.util.Log
@@ -65,9 +66,9 @@ open class OscamTvInputService : TvInputService() {
             activeUri = channelUri
 
             // Notify TIF framework that video is preparing
-            notifyVideoUnavailable(TvInputService.VIDEO_UNAVAILABLE_REASON_BUFFERING)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
 
-            val config = repository.getCurrentConfig()
+            val config = repository.getCurrentConfigBlocking()
             val knownChannels = config.channels
             val primaryCaid = config.caids.firstOrNull() ?: 0x1810
 

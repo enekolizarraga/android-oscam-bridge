@@ -432,7 +432,7 @@ static jstring impl_nativeTestConnectionEx(JNIEnv* env, jstring host, jint port,
     std::string desStr  = desKey ? env->GetStringUTFChars(desKey, nullptr) : "";
 
     std::string result;
-    bool ok = oscam::jni::NativeBridge::getInstance().testConnectionEx(
+    oscam::jni::NativeBridge::getInstance().testConnectionEx(
         hostStr, static_cast<uint16_t>(port), static_cast<uint8_t>(protocol),
         userStr, passStr, desStr, timeoutMs, result);
     return env->NewStringUTF(result.c_str());

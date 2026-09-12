@@ -28,7 +28,7 @@ std::optional<SatelliteProgramInfo> SatellitePmtParser::parsePmtSection(
 
     // section_length: 12 bits inferiores de bytes 1 y 2
     uint16_t sectionLength = static_cast<uint16_t>(((data[1] & 0x0F) << 8) | data[2]);
-    if (sectionLength + 3 > length) {
+    if (static_cast<size_t>(sectionLength + 3) > length) {
         BRIDGE_LOGW("parsePmtSection: section_length (%u) excede el tamaño del buffer (%zu)",
                     sectionLength, length);
         return std::nullopt;

@@ -1,7 +1,6 @@
-﻿package com.lizarragaeus.oscambridge
+package com.lizarragaeus.oscambridge
 
 import android.content.Context
-import android.media.tv.TvInputHardwareInfo
 import android.media.tv.TvInputManager
 import android.os.Build
 import android.util.Log
@@ -82,12 +81,21 @@ object SatelliteTunerMonitor {
         try {
             val tvInputManager = context.getSystemService(Context.TV_INPUT_SERVICE) as? TvInputManager
             if (tvInputManager != null) {
-                val hardwares = tvInputManager.hardwareList
-                for (hw in hardwares) {
-                    if (hw.deviceType == TvInputHardwareInfo.TV_INPUT_TYPE_TUNER) {
-                        tvInputTunerPresent = true
-                        tvInputCableStatus = hw.cableConnectionStatus
-                        break
+                val getHwListMethod = tvInputManager.javaClass.methods.firstOrNull { it.name == "getHardwareList" }
+                val hardwares = getHwListMethod?.invoke(tvInputManager) as? List<*>
+                if (hardwares != null) {
+                    for (hw in hardwares) {
+                        if (hw != null) {
+                            val getDeviceTypeMethod = hw.javaClass.methods.firstOrNull { it.name == "getDeviceType" }
+                            val deviceType = (getDeviceTypeMethod?.invoke(hw) as? Number)?.toInt()
+                            // TV_INPUT_TYPE_TUNER is constant 7
+                            if (deviceType == 7) {
+                                tvInputTunerPresent = true
+                                val getCableMethod = hw.javaClass.methods.firstOrNull { it.name == "getCableConnectionStatus" }
+                                tvInputCableStatus = (getCableMethod?.invoke(hw) as? Number)?.toInt() ?: -1
+                                break
+                            }
+                        }
                     }
                 }
             }
@@ -110,10 +118,10 @@ object SatelliteTunerMonitor {
             }
         }
 
-        // 4. Determine cable connection state
-        val isConnected: Boolean = if (tvInputCableStatus == TvInputHardwareInfo.CABLE_CONNECTION_STATUS_CONNECTED) {
+        // 4. Determine cable connection state (1 = CONNECTED, 2 = DISCONNECTED)
+        val isConnected: Boolean = if (tvInputCableStatus == 1) {
             true
-        } else if (tvInputCableStatus == TvInputHardwareInfo.CABLE_CONNECTION_STATUS_DISCONNECTED) {
+        } else if (tvInputCableStatus == 2) {
             false
         } else if (sysfsCarrier) {
             true

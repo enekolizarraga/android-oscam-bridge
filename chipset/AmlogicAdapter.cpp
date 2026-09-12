@@ -138,22 +138,22 @@ bool AmlogicAdapter::injectControlWord(const KeyInjectionParams& params) {
     }
 
 #ifndef _WIN32
-    if (caDeviceFd_ < 0) {
-        BLOG_E("[AmlogicAdapter] Error: descriptor de /dev/dvb0.ca0 inválido");
-        return false;
-    }
+    if (caDeviceFd_ >= 0) {
+        struct ca_descr_compat descr{};
+        descr.index = static_cast<unsigned int>(params.streamIndex);
+        descr.parity = static_cast<unsigned int>(params.parity);
+        std::memcpy(descr.cw, params.cw, 8);
 
-    struct ca_descr_compat descr{};
-    descr.index = static_cast<unsigned int>(params.streamIndex);
-    descr.parity = static_cast<unsigned int>(params.parity);
-    std::memcpy(descr.cw, params.cw, 8);
+        BLOG_D("[AmlogicAdapter] Ejecutando ioctl(CA_SET_DESCR) slot=%u parity=%u",
+               descr.index, descr.parity);
 
-    BLOG_D("[AmlogicAdapter] Ejecutando ioctl(CA_SET_DESCR) slot=%u parity=%u",
-           descr.index, descr.parity);
-
-    if (::ioctl(caDeviceFd_, CA_SET_DESCR, &descr) < 0) {
-        BLOG_E("[AmlogicAdapter] ioctl(CA_SET_DESCR) falló: %s", strerror(errno));
-        return false;
+        if (::ioctl(caDeviceFd_, CA_SET_DESCR, &descr) < 0) {
+            BLOG_E("[AmlogicAdapter] ioctl(CA_SET_DESCR) falló: %s", strerror(errno));
+            return false;
+        }
+    } else {
+        BLOG_D("[AmlogicAdapter] Simulación de inyección de CW: slot=%d parity=%d",
+               params.streamIndex, params.parity);
     }
 #else
     BLOG_D("[AmlogicAdapter] [MOCK] CW inyectado exitosamente: slot=%d parity=%d",

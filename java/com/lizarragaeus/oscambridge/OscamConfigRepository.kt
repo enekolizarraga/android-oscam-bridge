@@ -1,4 +1,4 @@
-﻿package com.lizarragaeus.oscambridge
+package com.lizarragaeus.oscambridge
 
 import android.app.ActivityManager
 import android.content.Context
@@ -429,6 +429,10 @@ class OscamConfigRepository(private val context: Context) {
 
     suspend fun getCurrentConfig(): OscamConfig {
         return configFlow.first()
+    }
+
+    fun getCurrentConfigBlocking(): OscamConfig = kotlinx.coroutines.runBlocking {
+        configFlow.first()
     }
 
     fun getHardwareInfo(): DeviceHardwareInfo {

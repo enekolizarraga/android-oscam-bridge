@@ -1,4 +1,4 @@
-﻿package com.lizarragaeus.oscambridge
+package com.lizarragaeus.oscambridge
 
 import android.content.BroadcastReceiver
 import android.content.Context

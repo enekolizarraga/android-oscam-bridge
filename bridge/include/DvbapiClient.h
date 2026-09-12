@@ -50,6 +50,7 @@ struct ConnectionConfig {
     int         maxReconnectAttempts{10}; ///< 0 = reintentos infinitos
     int         initialBackoffMs{500};  ///< Backoff inicial (se dobla en cada reintento)
     int         maxBackoffMs{60000};    ///< Cap del backoff
+    int         reconnectIntervalMs{2000}; ///< Intervalo base de reconexión
     bool        isUnixSocket{false};    ///< Forzar uso de socket UNIX
 };
 
@@ -111,6 +112,10 @@ public:
      */
     bool sendEcm(uint16_t serviceId, uint16_t caid, uint32_t providerId,
                  const uint8_t* ecmData, size_t length) override;
+
+    bool sendCaSetPid(uint8_t adapterId, const CaPid& pid);
+    bool sendDmxSetFilter(const DmxFilter& filter);
+    bool sendDmxStop(uint8_t adapterId, uint8_t demuxId, uint8_t filterId, uint16_t pid);
 
     ProtocolType getProtocolType() const override {
         return isUnixSocket() ? ProtocolType::DVBAPI_UNIX : ProtocolType::DVBAPI_TCP;

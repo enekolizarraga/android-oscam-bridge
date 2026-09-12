@@ -3,6 +3,7 @@ project(android-oscam-bridge CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ---------------------------------------------------------------------------
 # Flags de compilación (reproduce -Wall -Wextra del NDK Android)
@@ -35,6 +36,7 @@ add_library(oscam_bridge STATIC
 
 target_include_directories(oscam_bridge PUBLIC
     bridge
+    bridge/include
 )
 
 if(WIN32)
@@ -60,7 +62,9 @@ add_library(oscam_chipset STATIC
 
 target_include_directories(oscam_chipset PUBLIC
     chipset
+    chipset/include
     bridge
+    bridge/include
 )
 
 target_link_libraries(oscam_chipset PUBLIC oscam_bridge)
@@ -76,8 +80,11 @@ add_library(oscam_hal STATIC
 
 target_include_directories(oscam_hal PUBLIC
     hal/native
+    hal/native/include
     chipset
+    chipset/include
     bridge
+    bridge/include
 )
 
 target_link_libraries(oscam_hal PUBLIC oscam_chipset oscam_bridge)
@@ -92,8 +99,11 @@ if(ANDROID)
     target_include_directories(oscam_jni PUBLIC
         jni
         bridge
+        bridge/include
         hal/native
+        hal/native/include
         chipset
+        chipset/include
     )
     target_link_libraries(oscam_jni PRIVATE
         oscam_bridge
@@ -110,8 +120,11 @@ else()
         target_include_directories(oscam_jni PUBLIC
             jni
             bridge
+            bridge/include
             hal/native
+            hal/native/include
             chipset
+            chipset/include
             ${JNI_INCLUDE_DIRS}
         )
         target_link_libraries(oscam_jni PRIVATE

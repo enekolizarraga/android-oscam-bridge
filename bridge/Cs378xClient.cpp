@@ -684,7 +684,7 @@ bool Cs378xClient::readEncryptedPacket(int socketFd, uint8_t& outCmd, uint16_t& 
     }
 
     outPayload.clear();
-    if (payloadLen > 0 && 20 + payloadLen <= totalPadded) {
+    if (payloadLen > 0 && static_cast<size_t>(20 + payloadLen) <= totalPadded) {
         outPayload.assign(&allDec[20], &allDec[20 + payloadLen]);
     }
     return true;

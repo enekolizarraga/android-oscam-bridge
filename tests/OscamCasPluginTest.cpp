@@ -7,6 +7,7 @@
 #include "../hal/native/include/OscamCasService.h"
 #include "../chipset/include/IChipsetAdapter.h"
 #include "../bridge/include/DvbapiClient.h"
+#include <cstring>
 
 using namespace oscam::hal;
 using namespace oscam::chipset;

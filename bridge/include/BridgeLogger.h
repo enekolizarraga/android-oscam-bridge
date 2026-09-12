@@ -60,3 +60,10 @@ public:
                         __FILE__, __LINE__, __VA_ARGS__)
 #define BLOG_E(...) oscam::BridgeLogger::log(oscam::LogLevel::Error,   BLOG_TAG, \
                         __FILE__, __LINE__, __VA_ARGS__)
+
+#define BRIDGE_LOGV(...) BLOG_V(__VA_ARGS__)
+#define BRIDGE_LOGD(...) BLOG_D(__VA_ARGS__)
+#define BRIDGE_LOGI(...) BLOG_I(__VA_ARGS__)
+#define BRIDGE_LOGW(...) BLOG_W(__VA_ARGS__)
+#define BRIDGE_LOGE(...) BLOG_E(__VA_ARGS__)
+

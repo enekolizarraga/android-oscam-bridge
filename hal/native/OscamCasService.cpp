@@ -8,6 +8,7 @@
 #include "../../../bridge/include/BridgeLogger.h"
 #include "../../../bridge/include/NewcamdClient.h"
 #include "../../../bridge/include/CCcamClient.h"
+#include <cstring>
 
 namespace oscam::hal {
 

@@ -15,6 +15,7 @@ build_android/
 build_host/
 build_out/
 build_native/
+build-*/
 cmake-build-*/
 out/
 bin/

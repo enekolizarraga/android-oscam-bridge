@@ -1,4 +1,4 @@
-﻿package com.lizarragaeus.oscambridge
+package com.lizarragaeus.oscambridge
 
 import android.util.Log
 import com.sun.net.httpserver.HttpExchange
@@ -115,8 +115,12 @@ class StreamDescramblerServer(private val port: Int = 9191) {
                     val outputStream: OutputStream = exchange.responseBody
                     val buffer = ByteArray(BUFFER_PACKETS * TS_PACKET_SIZE)
 
+                    val inStream = inputStream ?: run {
+                        sendHttpError(exchange, 500, "InputStream is null")
+                        return@launch
+                    }
                     var bytesRead: Int
-                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    while (inStream.read(buffer).also { bytesRead = it } != -1) {
                         if (bytesRead > 0) {
                             // Ensure complete packets
                             val validBytes = (bytesRead / TS_PACKET_SIZE) * TS_PACKET_SIZE
