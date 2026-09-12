@@ -83,6 +83,16 @@ open class OscamCasSettingsActivity : AppCompatActivity() {
         setupDeliverySpinner()
         loadPersistedConfig()
         setupListeners()
+
+        // Ensure background foreground service and web server run 24/7 independently of this UI
+        val serviceIntent = Intent(this, OscamCasBinderService::class.java).apply {
+            action = OscamCasBinderService.ACTION_START
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
     }
 
     override fun onStart() {

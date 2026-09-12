@@ -54,6 +54,7 @@
             android:name=".OscamCasBinderService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
 
         <!-- Android TV Input Framework (TIF) Service para Apps de Reproduccion OEM (TCL, Sony, Philips, Xiaomi) -->

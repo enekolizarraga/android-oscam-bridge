@@ -170,11 +170,15 @@ object TclTvCompat {
      */
     fun checkTclHardwareNodes(): Map<String, Boolean> {
         val nodes = listOf(
-            "/dev/amstream_mpps", // Amlogic MPPS descrambler (TCL C845, C805, QM8, S905X4/T962)
-            "/dev/dvb0.ca0",      // Standard Linux DVB-CA node
-            "/dev/dvb0.demux0",   // DVB Demux node
-            "/dev/rtd_ca0",       // Realtek CA descrambler (TCL P635, P735, C725)
-            "/dev/mtk_ca0"        // MediaTek CA descrambler (TCL Pentonic models)
+            "/dev/amstream_mpps",        // Amlogic MPPS descrambler (TCL C845, C805, QM8, S905X4/T962)
+            "/dev/dvb0.ca0",             // Standard Linux DVB-CA node
+            "/dev/dvb/adapter0/ca0",     // Standard Linux DVB Adapter 0 CA node
+            "/dev/dvb0.ci0",             // Standard Linux DVB CI Slot node
+            "/dev/dvb/adapter0/ci0",     // Standard Linux DVB Adapter 0 CI Slot node
+            "/dev/ci0",                  // Common Interface hardware slot character device
+            "/dev/dvb0.demux0",          // DVB Demux node
+            "/dev/rtd_ca0",              // Realtek CA descrambler (TCL P635, P735, C725)
+            "/dev/mtk_ca0"               // MediaTek CA descrambler (TCL Pentonic models)
         )
 
         val statusMap = mutableMapOf<String, Boolean>()

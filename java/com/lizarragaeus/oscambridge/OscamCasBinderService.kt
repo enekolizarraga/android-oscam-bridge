@@ -106,6 +106,16 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
 
         // Start embedded stream descrambler proxy (port 9191)
         startStreamDescramblerServer()
+
+        // Start Virtual CI+ CAM Module Emulator for television CI slot detection
+        serviceScope.launch {
+            try {
+                val config = repository.getCurrentConfig()
+                CiModuleEmulator.start(applicationContext, config)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not initialize CiModuleEmulator: ${e.message}")
+            }
+        }
     }
 
     private fun startEmbeddedWebServer() {
@@ -115,6 +125,7 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
                 repository = repository,
                 onConfigUpdatedCallback = { newConfig ->
                     Log.i(TAG, "Configuration updated via Web UI: ${newConfig.serverHost}:${newConfig.serverPort}. Restarting bridge...")
+                    CiModuleEmulator.updateConfig(newConfig)
                     restartBridge()
                 },
                 port = 8080
@@ -159,6 +170,9 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         val action = intent?.action ?: ACTION_START
         Log.i(TAG, "OscamCasBinderService::onStartCommand action=$action")
 
+        val localIp = getLocalIpAddress()
+        startForeground(NOTIFICATION_ID, buildNotification("OSCam/CCcam CI+ CAS Bridge Active | Web UI: http://$localIp:8080"))
+
         when (action) {
             ACTION_START, LEGACY_ACTION_START -> startBridge()
             ACTION_STOP, LEGACY_ACTION_STOP -> stopBridge()
@@ -170,6 +184,16 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
 
     override fun onBind(intent: Intent?): IBinder {
         return binder
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        Log.i(TAG, "OscamCasSettingsActivity unbound from service. Keeping 24/7 background service & Web UI running.")
+        return true
+    }
+
+    override fun onRebind(intent: Intent?) {
+        super.onRebind(intent)
+        Log.i(TAG, "OscamCasSettingsActivity rebound to active background service.")
     }
 
     fun startBridge() {
@@ -188,6 +212,9 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
                 val config = repository.getCurrentConfig()
                 val primary = config.primaryServer
                 Log.i(TAG, "Starting OSCam bridge -> ${primary.host}:${primary.port} [Proto: ${primary.protocol.displayName}, Sys: ${config.deliverySystem}]")
+
+                // Ensure CI+ CAM Module Emulator is broadcasting supported CAIDs to TV OS
+                CiModuleEmulator.start(applicationContext, config)
 
                 val caidIntArray = config.caids.toIntArray()
                 val initOk = OscamNativeBridge.nativeInitEx(
@@ -235,6 +262,7 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         isServiceRunning = false
         reconnectJob?.cancel()
         statsMonitorJob?.cancel()
+        CiModuleEmulator.stop()
 
         serviceScope.launch {
             OscamNativeBridge.nativeStop()
@@ -459,6 +487,7 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
     override fun onDestroy() {
         Log.i(TAG, "OscamCasBinderService::onDestroy releasing resources")
         super.onDestroy()
+        CiModuleEmulator.stop()
         serviceScope.cancel()
         webServer?.stop()
         streamServer?.stop()
