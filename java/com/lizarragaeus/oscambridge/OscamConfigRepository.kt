@@ -368,10 +368,10 @@ class OscamConfigRepository(private val context: Context) {
             }
 
             val channelsJson = prefs[KEY_CHANNELS_JSON]
-            val parsedChannels = if (!channelsJson.isNullOrEmpty()) {
-                parseChannelsJson(channelsJson)
+            val parsedChannels = if (channelsJson == null) {
+                OscamConfig.defaultChannels()  // First launch only — key never written
             } else {
-                OscamConfig.defaultChannels()
+                parseChannelsJson(channelsJson)
             }
 
             val wolJson = prefs[KEY_WOL_JSON]
@@ -588,7 +588,7 @@ class OscamConfigRepository(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing channels JSON: ${e.message}", e)
         }
-        return list.ifEmpty { OscamConfig.defaultChannels() }
+        return list
     }
 
     private fun serializeWolJson(wolProfiles: List<OscamWolEntry>): String {

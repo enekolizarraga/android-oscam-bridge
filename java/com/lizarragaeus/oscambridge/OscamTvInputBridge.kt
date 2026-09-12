@@ -225,6 +225,156 @@ class OscamTvInputBridge(private val context: Context) {
         return false
     }
 
+    data class TvDiscoveredChannel(
+        val id: Long,
+        val displayName: String,
+        val displayNumber: String,
+        val serviceId: Int,
+        val transportStreamId: Int,
+        val originalNetworkId: Int,
+        val serviceType: String,
+        val type: String,
+        val isScrambled: Boolean,
+        val detectedCaids: List<Int>,
+        val pmtPid: Int
+    )
+
+    /**
+     * Extracts CA system IDs (Tag 0x09) from binary PMT / provider data blobs.
+     */
+    fun extractCaidsFromProviderData(providerData: ByteArray): List<Int> {
+        val caids = mutableListOf<Int>()
+        try {
+            if (providerData.size >= 12 && (providerData[0].toInt() and 0xFF) == 0x02) {
+                val sectionLen = ((providerData[1].toInt() and 0x0F) shl 8) or (providerData[2].toInt() and 0xFF)
+                val progInfoLen = ((providerData[10].toInt() and 0x0F) shl 8) or (providerData[11].toInt() and 0xFF)
+                var offset = 12
+                val progEnd = (12 + progInfoLen).coerceAtMost(providerData.size)
+                while (offset + 2 <= progEnd) {
+                    val tag = providerData[offset].toInt() and 0xFF
+                    val len = providerData[offset + 1].toInt() and 0xFF
+                    if (tag == 0x09 && offset + 4 <= providerData.size) {
+                        val caid = ((providerData[offset + 2].toInt() and 0xFF) shl 8) or (providerData[offset + 3].toInt() and 0xFF)
+                        if (caid > 0 && !caids.contains(caid)) caids.add(caid)
+                    }
+                    offset += 2 + len
+                }
+                offset = progEnd
+                val totalEnd = (3 + sectionLen - 4).coerceAtMost(providerData.size)
+                while (offset + 5 <= totalEnd) {
+                    val esInfoLen = ((providerData[offset + 3].toInt() and 0x0F) shl 8) or (providerData[offset + 4].toInt() and 0xFF)
+                    var esDescOffset = offset + 5
+                    val esDescEnd = (esDescOffset + esInfoLen).coerceAtMost(totalEnd)
+                    while (esDescOffset + 2 <= esDescEnd) {
+                        val tag = providerData[esDescOffset].toInt() and 0xFF
+                        val len = providerData[esDescOffset + 1].toInt() and 0xFF
+                        if (tag == 0x09 && esDescOffset + 4 <= providerData.size) {
+                            val caid = ((providerData[esDescOffset + 2].toInt() and 0xFF) shl 8) or (providerData[esDescOffset + 3].toInt() and 0xFF)
+                            if (caid > 0 && !caids.contains(caid)) caids.add(caid)
+                        }
+                        esDescOffset += 2 + len
+                    }
+                    offset = esDescEnd
+                }
+            } else {
+                var i = 0
+                while (i + 4 <= providerData.size) {
+                    if ((providerData[i].toInt() and 0xFF) == 0x09) {
+                        val dlen = providerData[i + 1].toInt() and 0xFF
+                        if (dlen in 4..32 && i + 2 + dlen <= providerData.size) {
+                            val caid = ((providerData[i + 2].toInt() and 0xFF) shl 8) or (providerData[i + 3].toInt() and 0xFF)
+                            if (caid in 0x0100..0x56FF && !caids.contains(caid)) {
+                                caids.add(caid)
+                            }
+                        }
+                    }
+                    i++
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Error extracting CAIDs from provider data: ${e.message}")
+        }
+        return caids
+    }
+
+    /**
+     * Enumerates all broadcast channels registered in Android TV's TvContract.Channels.
+     */
+    fun queryAllTvChannels(): List<TvDiscoveredChannel> {
+        val list = mutableListOf<TvDiscoveredChannel>()
+        try {
+            val projection = arrayOf(
+                android.media.tv.TvContract.Channels._ID,
+                android.media.tv.TvContract.Channels.COLUMN_DISPLAY_NAME,
+                android.media.tv.TvContract.Channels.COLUMN_DISPLAY_NUMBER,
+                android.media.tv.TvContract.Channels.COLUMN_SERVICE_ID,
+                android.media.tv.TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID,
+                android.media.tv.TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID,
+                android.media.tv.TvContract.Channels.COLUMN_SERVICE_TYPE,
+                android.media.tv.TvContract.Channels.COLUMN_TYPE,
+                android.media.tv.TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA
+            )
+            val uri = android.media.tv.TvContract.Channels.CONTENT_URI
+            context.contentResolver.query(uri, projection, null, null, "${android.media.tv.TvContract.Channels.COLUMN_DISPLAY_NUMBER} ASC")?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels._ID)
+                val nameIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_DISPLAY_NAME)
+                val numIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_DISPLAY_NUMBER)
+                val sidIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_SERVICE_ID)
+                val tsidIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID)
+                val onidIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID)
+                val sTypeIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_SERVICE_TYPE)
+                val typeIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_TYPE)
+                val dataIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA)
+
+                while (cursor.moveToNext()) {
+                    val id = if (idIdx >= 0) cursor.getLong(idIdx) else 0L
+                    val name = if (nameIdx >= 0) cursor.getString(nameIdx) ?: "Channel $id" else "Channel $id"
+                    val num = if (numIdx >= 0) cursor.getString(numIdx) ?: "" else ""
+                    val sid = if (sidIdx >= 0) cursor.getInt(sidIdx) else 0
+                    val tsid = if (tsidIdx >= 0) cursor.getInt(tsidIdx) else 0
+                    val onid = if (onidIdx >= 0) cursor.getInt(onidIdx) else 0
+                    val sType = if (sTypeIdx >= 0) cursor.getString(sTypeIdx) ?: "" else ""
+                    val type = if (typeIdx >= 0) cursor.getString(typeIdx) ?: "" else ""
+
+                    var scrambled = false
+                    val caids = mutableListOf<Int>()
+                    var pmtPid = 100
+
+                    if (dataIdx >= 0) {
+                        val blob = cursor.getBlob(dataIdx)
+                        if (blob != null && blob.size >= 16) {
+                            scrambled = OscamNativeBridge.nativeIsPmtScrambled(blob)
+                            val extracted = extractCaidsFromProviderData(blob)
+                            caids.addAll(extracted)
+                            if (extracted.isNotEmpty()) {
+                                scrambled = true
+                            }
+                        }
+                    }
+
+                    list.add(
+                        TvDiscoveredChannel(
+                            id = id,
+                            displayName = name,
+                            displayNumber = num,
+                            serviceId = sid,
+                            transportStreamId = tsid,
+                            originalNetworkId = onid,
+                            serviceType = sType,
+                            type = type,
+                            isScrambled = scrambled,
+                            detectedCaids = caids,
+                            pmtPid = pmtPid
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error scanning TvContract.Channels: ${e.message}", e)
+        }
+        return list
+    }
+
     /**
      * Binds broadcast channel only if it is scrambled.
      * For FTA channels, releases active CAS sessions and allows direct TV hardware playback.

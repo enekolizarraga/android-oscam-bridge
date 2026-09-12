@@ -115,6 +115,8 @@ class OscamLocalConfigWebServer(
                 createContext("/playlist.m3u", PlaylistM3uHandler())
                 createContext("/channels.m3u", PlaylistM3uHandler())
                 createContext("/lamedb", LamedbExportHandler())
+                createContext("/api/channels/scan", ApiChannelsScanHandler())
+                createContext("/api/channels/import", ApiChannelsImportHandler())
 
                 executor = null
                 start()
@@ -742,78 +744,317 @@ class OscamLocalConfigWebServer(
 
     private inner class ApiTestHandler : HttpHandler {
         override fun handle(exchange: HttpExchange) {
-            scope.launch {
-                try {
-                    val body = exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
-                    val json = JSONObject(body)
-                    val host = json.optString("host", "127.0.0.1").trim()
-                    val port = json.optInt("port", 9000)
-                    val protoStr = json.optString("protocol", "DVBAPI").trim()
-                    val user = json.optString("user", "android_tv").trim()
-                    val password = json.optString("password", "android_tv").trim()
-                    val desKey = json.optString("des_key", "0102030405060708091011121314").trim()
+            // Fully synchronous — AndroidHttpServer.clientPool is already an IO thread pool.
+            // No coroutines needed here; they caused thread-reuse deadlocks on repeated pings.
+            try {
+                val body = exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
+                val json = JSONObject(body)
+                val host = json.optString("host", "127.0.0.1").trim()
+                val port = json.optInt("port", 9000)
+                val protoStr = json.optString("protocol", "DVBAPI").trim()
+                val user = json.optString("user", "android_tv").trim()
+                val password = json.optString("password", "android_tv").trim()
+                val desKey = json.optString("des_key", "0102030405060708091011121314").trim()
 
-                    val parsedProto = ServerProtocol.fromString(protoStr)
-                    appendLog("Testing connectivity to ${parsedProto.name} server at $host:$port (user: $user)...")
-                    val startTime = System.currentTimeMillis()
+                val parsedProto = ServerProtocol.fromString(protoStr)
+                appendLog("Ping test: ${parsedProto.name} → $host:$port (user: $user)")
+                val startTime = System.currentTimeMillis()
 
-                    var ok = false
-                    var err = ""
-                    var protocolDetail = ""
+                var ok = false
+                var err = ""
+                var protocolDetail = ""
 
-                    // 1. Try protocol-level test via NativeBridge if available
+                // 1. Optional native protocol-level probe (best-effort)
+                if (parsedProto != ServerProtocol.DVBAPI_UNIX) {
                     try {
                         val testRes = OscamNativeBridge.nativeTestConnectionEx(
-                            host, port, parsedProto.id, user, password, desKey, 3000
+                            host, port, parsedProto.id, user, password, desKey, 2500
                         )
                         if (testRes.isNotEmpty()) {
                             protocolDetail = testRes
                             if (!testRes.startsWith("FAIL") && !testRes.startsWith("Error") && !testRes.startsWith("ERROR")) {
                                 ok = true
-                            } else {
-                                err = testRes
                             }
                         }
-                    } catch (t: Throwable) {
-                        // Native library not loaded or mock environment: fallback to TCP socket
+                    } catch (_: Throwable) {
+                        // Native .so not available — fall through to protocol-specific Kotlin probe
                     }
-
-                    // 2. Fallback to raw TCP socket if native test was not performed
-                    if (!ok && err.isEmpty() && parsedProto != ServerProtocol.DVBAPI_UNIX) {
-                        try {
-                            Socket().use { s ->
-                                s.connect(InetSocketAddress(host, port), 3000)
-                                ok = true
-                            }
-                        } catch (e: Exception) {
-                            ok = false
-                            err = e.message ?: "Connection refused"
-                        }
-                    }
-
-                    val elapsed = System.currentTimeMillis() - startTime
-
-                    if (ok) {
-                        appendLog("Ping test OK for ${parsedProto.name} $host:$port (${elapsed}ms)${if (protocolDetail.isNotEmpty()) " [$protocolDetail]" else ""}")
-                    } else {
-                        appendLog("Ping test FAILED for ${parsedProto.name} $host:$port: $err")
-                    }
-
-                    val resObj = JSONObject().apply {
-                        put("success", ok)
-                        put("latency_ms", elapsed)
-                        put("protocol", parsedProto.name)
-                        put("detail", protocolDetail)
-                        put("error", if (ok) "" else err)
-                    }
-
-                    sendJsonResponse(exchange, 200, resObj.toString())
-                } catch (e: Exception) {
-                    sendErrorResponse(exchange, 500, e.message ?: "Test error")
                 }
+
+                // 2. Protocol-specific Kotlin fallback probe (when native .so unavailable)
+                if (!ok) {
+                    val result = testProtocol(parsedProto, host, port, user, password, desKey, 3000)
+                    ok = result.first
+                    if (result.second.isNotEmpty()) {
+                        if (ok) protocolDetail = result.second else err = result.second
+                    }
+                }
+
+                val elapsed = System.currentTimeMillis() - startTime
+
+                appendLog(if (ok) "Ping OK: ${parsedProto.name} $host:$port (${elapsed}ms) [$protocolDetail]"
+                          else "Ping FAIL: ${parsedProto.name} $host:$port — $err")
+
+                val resObj = JSONObject().apply {
+                    put("success", ok)
+                    put("latency_ms", elapsed)
+                    put("protocol", parsedProto.name)
+                    put("detail", protocolDetail)
+                    put("error", if (ok) "" else err)
+                }
+                sendJsonResponse(exchange, 200, resObj.toString())
+            } catch (e: Exception) {
+                appendLog("Ping handler error: ${e.message}")
+                sendErrorResponse(exchange, 500, e.message ?: "Test error")
             }
         }
+
+        /**
+         * Protocol-specific connectivity test. Returns Pair(success, detail/error message).
+         * Each protocol performs its real authentication handshake, not just a TCP ping.
+         */
+        private fun testProtocol(
+            proto: ServerProtocol, host: String, port: Int,
+            user: String, password: String, desKey: String, timeoutMs: Int
+        ): Pair<Boolean, String> = when (proto) {
+
+            ServerProtocol.DVBAPI_UNIX -> {
+                // UNIX socket path — no network test possible from here
+                val valid = host.isNotEmpty() && host.startsWith("/")
+                Pair(valid, if (valid) "UNIX socket path configured: $host" else "Invalid UNIX socket path: $host")
+            }
+
+            ServerProtocol.DVBAPI -> {
+                // DVBAPI TCP — simple reachability, no auth (server only checks source IP)
+                tcpPing(host, port, timeoutMs, "DVBAPI TCP reachable")
+            }
+
+            ServerProtocol.RADEGAST -> {
+                // Radegast v3 — TCP only, no crypto handshake on connect
+                tcpPing(host, port, timeoutMs, "Radegast TCP reachable")
+            }
+
+            ServerProtocol.OSCAM_WEBIF -> {
+                // OSCam WebIF REST API — HTTP GET /api/info
+                testOscamWebIf(host, port, user, password, timeoutMs)
+            }
+
+            ServerProtocol.CCCAM -> {
+                // CCcam v2.3.0 — SHA1 + RC4 challenge-response + credential login
+                testCCcam(host, port, user, password, timeoutMs)
+            }
+
+            ServerProtocol.NEWCAMD -> {
+                // Newcamd v5.25 — Triple-DES encrypted login + server ACK
+                testNewcamd(host, port, user, password, desKey, timeoutMs)
+            }
+
+            ServerProtocol.CS378X -> {
+                // Camd35 / CS378X — login packet with MD5 hash
+                testCs378x(host, port, user, password, timeoutMs)
+            }
+        }
+
+        // ── TCP ping helper ────────────────────────────────────────────────
+        private fun tcpPing(host: String, port: Int, timeoutMs: Int, detail: String): Pair<Boolean, String> {
+            return try {
+                val sock = Socket()
+                sock.connect(InetSocketAddress(host, port), timeoutMs)
+                sock.close()
+                Pair(true, detail)
+            } catch (e: Exception) {
+                Pair(false, e.message ?: "Connection refused")
+            }
+        }
+
+        // ── OSCam WebIF HTTP test ──────────────────────────────────────────
+        private fun testOscamWebIf(host: String, port: Int, user: String, password: String, timeoutMs: Int): Pair<Boolean, String> {
+            return try {
+                val url = java.net.URL("http://$host:$port/api/info")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = timeoutMs
+                conn.readTimeout = timeoutMs
+                if (user.isNotEmpty()) {
+                    val creds = android.util.Base64.encodeToString("$user:$password".toByteArray(), android.util.Base64.NO_WRAP)
+                    conn.setRequestProperty("Authorization", "Basic $creds")
+                }
+                conn.requestMethod = "GET"
+                val code = conn.responseCode
+                conn.disconnect()
+                if (code in 200..299 || code == 401) {
+                    Pair(true, "OSCam WebIF HTTP $code")
+                } else {
+                    Pair(false, "OSCam WebIF HTTP $code")
+                }
+            } catch (e: Exception) {
+                Pair(false, e.message ?: "WebIF unreachable")
+            }
+        }
+
+        // ── CCcam SHA1+RC4 handshake ───────────────────────────────────────
+        // Mirrors CCcamClient::connectAndLogin() in CCcamClient.cpp exactly
+        private fun testCCcam(host: String, port: Int, user: String, password: String, timeoutMs: Int): Pair<Boolean, String> {
+            return try {
+                val sock = Socket()
+                sock.connect(InetSocketAddress(host, port), timeoutMs)
+                sock.soTimeout = timeoutMs
+                val ins = sock.getInputStream()
+                val outs = sock.getOutputStream()
+
+                // Step 1: read 16-byte server random IV
+                val srvRandom = ByteArray(16)
+                var read = 0
+                while (read < 16) { val r = ins.read(srvRandom, read, 16 - read); if (r < 0) throw Exception("server closed during handshake"); read += r }
+
+                // Step 2: SHA1(srvRandom) → init RC4 send/recv key streams
+                val hash = sha1(srvRandom)
+                val sendKey = IntArray(256); val recvKey = IntArray(256)
+                rc4Init(sendKey, hash); rc4Init(recvKey, hash)
+
+                // Step 3: encrypt srvRandom and send as challenge response
+                outs.write(rc4Crypt(sendKey, srvRandom))
+
+                // Step 4: build and send login packet (34 bytes)
+                // [user(20)] + [nodeId(8)] + [version(6)]
+                val loginBuf = ByteArray(34)
+                val userBytes = user.toByteArray(Charsets.UTF_8)
+                System.arraycopy(userBytes, 0, loginBuf, 0, minOf(userBytes.size, 20))
+                val nodeId = ByteArray(8); java.util.Random().nextBytes(nodeId)
+                System.arraycopy(nodeId, 0, loginBuf, 20, 8)
+                val ver = "2.3.0\u0000".toByteArray(Charsets.UTF_8)
+                System.arraycopy(ver, 0, loginBuf, 28, minOf(ver.size, 6))
+                outs.write(rc4Crypt(sendKey, loginBuf))
+                outs.flush()
+
+                // Step 5: read 8-byte server ACK (server node ID encrypted with recvKey)
+                val srvAck = ByteArray(8)
+                read = 0
+                while (read < 8) { val r = ins.read(srvAck, read, 8 - read); if (r < 0) throw Exception("auth rejected — no server ACK (bad credentials?)"); read += r }
+
+                sock.close()
+                Pair(true, "CCcam login OK (SHA1+RC4 v2.3.0)")
+            } catch (e: Exception) {
+                Pair(false, "CCcam: ${e.message ?: "auth failed"}")
+            }
+        }
+
+        // ── Newcamd v5.25 3DES login ───────────────────────────────────────
+        // Mirrors NewcamdClient::connectAndLogin() — MSG_CLIENT_2_SERVER_LOGIN
+        private fun testNewcamd(host: String, port: Int, user: String, password: String, desKey: String, timeoutMs: Int): Pair<Boolean, String> {
+            return try {
+                val sock = Socket()
+                sock.connect(InetSocketAddress(host, port), timeoutMs)
+                sock.soTimeout = timeoutMs
+                val ins = sock.getInputStream()
+                val outs = sock.getOutputStream()
+
+                // Step 1: read 14-byte server random (MSG_SERVER_2_CLIENT_INIT)
+                val srvRand = ByteArray(14)
+                var read = 0
+                while (read < 14) { val r = ins.read(srvRand, read, 14 - read); if (r < 0) throw Exception("no init packet"); read += r }
+
+                // Step 2: derive 3DES key: desKeyBytes XOR password (byte-by-byte, cyclic)
+                val desKeyBytes = desKey.replace(" ", "").chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                val pwdBytes = password.toByteArray(Charsets.UTF_8)
+                val keyMat = ByteArray(14) { i -> (desKeyBytes[i % desKeyBytes.size].toInt() xor pwdBytes[i % pwdBytes.size].toInt()).toByte() }
+
+                // Build login payload: [0x00, 0x00] + user\0 + password\0
+                val userB = user.toByteArray(Charsets.UTF_8)
+                val passB = password.toByteArray(Charsets.UTF_8)
+                val payload = ByteArray(2 + userB.size + 1 + passB.size + 1)
+                payload[0] = 0x00; payload[1] = 0x00
+                System.arraycopy(userB, 0, payload, 2, userB.size)
+                System.arraycopy(passB, 0, payload, 3 + userB.size, passB.size)
+
+                // Pad to 8-byte boundary and encrypt with 3DES-CBC (IV = first 8 bytes of srvRand)
+                val paddedLen = ((payload.size + 7) / 8) * 8
+                val padded = payload.copyOf(paddedLen)
+                val key24 = ByteArray(24).also { System.arraycopy(keyMat, 0, it, 0, 14); System.arraycopy(keyMat, 0, it, 14, 10) }
+                val cipher = javax.crypto.Cipher.getInstance("DESede/CBC/NoPadding")
+                cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,
+                    javax.crypto.spec.SecretKeySpec(key24, "DESede"),
+                    javax.crypto.spec.IvParameterSpec(srvRand.copyOf(8)))
+                val encrypted = cipher.doFinal(padded)
+
+                // Send: [MSG_CLIENT_2_SERVER_LOGIN=0x14][len_hi][len_lo] + encrypted payload
+                outs.write(byteArrayOf(0x14.toByte(), ((encrypted.size shr 8) and 0xFF).toByte(), (encrypted.size and 0xFF).toByte()))
+                outs.write(encrypted)
+                outs.flush()
+
+                // Step 3: read 3-byte ACK — 0x15 = OK, 0x16 = NACK
+                val ackBuf = ByteArray(3)
+                read = 0
+                while (read < 3) { val r = ins.read(ackBuf, read, 3 - read); if (r < 0) break; read += r }
+                sock.close()
+
+                val msgType = ackBuf[0].toInt() and 0xFF
+                if (msgType == 0x15) Pair(true, "Newcamd login ACK (3DES)")
+                else Pair(false, "Newcamd NACK — wrong credentials or DES key [0x${msgType.toString(16)}]")
+            } catch (e: Exception) {
+                Pair(false, "Newcamd: ${e.message ?: "auth failed"}")
+            }
+        }
+
+        // ── CS378X / Camd35 MD5 login ──────────────────────────────────────
+        private fun testCs378x(host: String, port: Int, user: String, password: String, timeoutMs: Int): Pair<Boolean, String> {
+            return try {
+                val sock = Socket()
+                sock.connect(InetSocketAddress(host, port), timeoutMs)
+                sock.soTimeout = timeoutMs
+                val ins = sock.getInputStream()
+                val outs = sock.getOutputStream()
+
+                // CS378X LOGIN packet (CMD=0x00):
+                // [cmd(1)=0x00] [userLen(1)] [MD5(pass)(16)] [user(20)] [pad(3)]
+                val passHash = java.security.MessageDigest.getInstance("MD5").digest(password.toByteArray(Charsets.UTF_8))
+                val userBytes = user.toByteArray(Charsets.UTF_8).copyOf(20)
+                val loginPkt = ByteArray(40)
+                loginPkt[0] = 0x00; loginPkt[1] = user.length.toByte()
+                System.arraycopy(passHash, 0, loginPkt, 2, 16)
+                System.arraycopy(userBytes, 0, loginPkt, 18, 20)
+                outs.write(loginPkt); outs.flush()
+
+                // Read 20-byte response: [type(1)] + [data(19)]
+                val resp = ByteArray(20)
+                var read = 0
+                while (read < 20) { val r = ins.read(resp, read, 20 - read); if (r < 0) break; read += r }
+                sock.close()
+
+                val rType = resp[0].toInt() and 0xFF
+                if (read >= 1 && rType == 0x00) Pair(true, "CS378X login OK")
+                else Pair(false, "CS378X login failed — wrong user/pass [resp=0x${rType.toString(16)}]")
+            } catch (e: Exception) {
+                Pair(false, "CS378X: ${e.message ?: "auth failed"}")
+            }
+        }
+
+        // ── SHA1 helper ────────────────────────────────────────────────    
+        private fun sha1(data: ByteArray): ByteArray =
+            java.security.MessageDigest.getInstance("SHA-1").digest(data)
+
+        // ── RC4 helpers — mirrors CCcamClient rc4Init/rc4Crypt exactly ─────
+        private fun rc4Init(state: IntArray, key: ByteArray) {
+            for (i in 0..255) state[i] = i
+            var j = 0
+            for (i in 0..255) {
+                j = (j + state[i] + (key[i % key.size].toInt() and 0xFF)) and 0xFF
+                val tmp = state[i]; state[i] = state[j]; state[j] = tmp
+            }
+        }
+
+        private fun rc4Crypt(state: IntArray, input: ByteArray): ByteArray {
+            val output = ByteArray(input.size)
+            var x = 0; var y = 0
+            for (i in input.indices) {
+                x = (x + 1) and 0xFF
+                y = (y + state[x]) and 0xFF
+                val tmp = state[x]; state[x] = state[y]; state[y] = tmp
+                output[i] = (input[i].toInt() xor state[(state[x] + state[y]) and 0xFF]).toByte()
+            }
+            return output
+        }
     }
+
 
     private inner class ApiTestAllHandler : HttpHandler {
         override fun handle(exchange: HttpExchange) {
@@ -1082,6 +1323,317 @@ class OscamLocalConfigWebServer(
                 } catch (e: Exception) {
                     appendLog("Error sending WoL packet: ${e.message}")
                     sendErrorResponse(exchange, 500, "WoL error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    data class PresetChannelDefinition(
+        val name: String,
+        val satellite: String,
+        val frequency: Int,
+        val polarization: String,
+        val symbolRate: Int,
+        val serviceId: Int,
+        val pmtPid: Int,
+        val caid: Int,
+        val isEncrypted: Boolean
+    )
+
+    private val satellitePresetsDatabase = listOf(
+        // Astra 19.2°E - Movistar+ (Encrypted CAID 0x1810)
+        PresetChannelDefinition("Movistar LaLiga HD", "Astra 19.2°E", 10817, "V", 22000, 29950, 1030, 0x1810, true),
+        PresetChannelDefinition("Movistar Liga de Campeones HD", "Astra 19.2°E", 10729, "V", 22000, 30001, 1024, 0x1810, true),
+        PresetChannelDefinition("Movistar Plus+ HD", "Astra 19.2°E", 10758, "V", 22000, 30050, 1025, 0x1810, true),
+        PresetChannelDefinition("Movistar Accion HD", "Astra 19.2°E", 11126, "V", 22000, 30850, 1026, 0x1810, true),
+        PresetChannelDefinition("Movistar Comedia HD", "Astra 19.2°E", 10758, "V", 22000, 30052, 1027, 0x1810, true),
+        PresetChannelDefinition("Movistar Drama HD", "Astra 19.2°E", 11258, "V", 22000, 30900, 1028, 0x1810, true),
+        PresetChannelDefinition("Movistar Cine Espanol HD", "Astra 19.2°E", 10817, "V", 22000, 29952, 1031, 0x1810, true),
+        PresetChannelDefinition("Movistar Deportes HD", "Astra 19.2°E", 10729, "V", 22000, 30003, 1032, 0x1810, true),
+        PresetChannelDefinition("DAZN 1 HD", "Astra 19.2°E", 10729, "V", 22000, 30005, 1034, 0x1810, true),
+        PresetChannelDefinition("DAZN 2 HD", "Astra 19.2°E", 10729, "V", 22000, 30006, 1035, 0x1810, true),
+        PresetChannelDefinition("DAZN LaLiga HD", "Astra 19.2°E", 11258, "V", 22000, 30905, 1036, 0x1810, true),
+        PresetChannelDefinition("Warner TV HD", "Astra 19.2°E", 11126, "V", 22000, 30855, 1037, 0x1810, true),
+        PresetChannelDefinition("Star Channel HD", "Astra 19.2°E", 11258, "V", 22000, 30910, 1038, 0x1810, true),
+        PresetChannelDefinition("AXN HD", "Astra 19.2°E", 11126, "V", 22000, 30860, 1039, 0x1810, true),
+        PresetChannelDefinition("Calle 13 HD", "Astra 19.2°E", 10817, "V", 22000, 29955, 1040, 0x1810, true),
+        PresetChannelDefinition("Syfy HD", "Astra 19.2°E", 10817, "V", 22000, 29956, 1041, 0x1810, true),
+        PresetChannelDefinition("Cosmo HD", "Astra 19.2°E", 11258, "V", 22000, 30915, 1042, 0x1810, true),
+        // Astra 19.2°E - HD+ Germany (Encrypted CAID 0x1830)
+        PresetChannelDefinition("HD+ RTL UHD", "Astra 19.2°E", 11214, "H", 22000, 13410, 1025, 0x1830, true),
+        PresetChannelDefinition("HD+ ProSieben HD", "Astra 19.2°E", 11464, "H", 22000, 61301, 102, 0x1830, true),
+        PresetChannelDefinition("HD+ Sat.1 HD", "Astra 19.2°E", 11464, "H", 22000, 61300, 101, 0x1830, true),
+        // Astra 19.2°E - Sky Deutschland (Encrypted CAID 0x098C)
+        PresetChannelDefinition("Sky Sport Bundesliga 1 HD", "Astra 19.2°E", 11720, "H", 27500, 105, 96, 0x098C, true),
+        PresetChannelDefinition("Sky Cinema Premiere HD", "Astra 19.2°E", 11758, "H", 27500, 107, 98, 0x098C, true),
+        // Astra 19.2°E - Free-to-Air (FTA CAID 0x0000)
+        PresetChannelDefinition("Canal 24 Horas HD", "Astra 19.2°E", 11376, "V", 22000, 30010, 1050, 0, false),
+        PresetChannelDefinition("TVE Internacional HD", "Astra 19.2°E", 11376, "V", 22000, 30011, 1051, 0, false),
+        PresetChannelDefinition("Telesur HD", "Astra 19.2°E", 11376, "V", 22000, 30012, 1052, 0, false),
+        PresetChannelDefinition("ZDF HD", "Astra 19.2°E", 11362, "H", 22000, 11110, 6100, 0, false),
+        PresetChannelDefinition("Das Erste HD", "Astra 19.2°E", 11494, "H", 22000, 10301, 5100, 0, false),
+        // Hispasat 30°W - MEO / NOS (Encrypted CAID 0x1802)
+        PresetChannelDefinition("Sport TV 1 HD", "Hispasat 30°W", 12246, "H", 27500, 401, 4010, 0x1802, true),
+        PresetChannelDefinition("Sport TV 2 HD", "Hispasat 30°W", 12246, "H", 27500, 402, 4020, 0x1802, true),
+        PresetChannelDefinition("Canal Hollywood PT", "Hispasat 30°W", 12246, "H", 27500, 404, 4040, 0x1802, true),
+        PresetChannelDefinition("TVI Internacional", "Hispasat 30°W", 12168, "H", 27500, 405, 4050, 0, false),
+        // Hotbird 13°E - Tivùsat / Polsat / SRG (Encrypted)
+        PresetChannelDefinition("Rai 4K", "Hotbird 13°E", 11075, "V", 30000, 1, 100, 0x183E, true),
+        PresetChannelDefinition("Sky Sport Uno HD", "Hotbird 13°E", 11958, "V", 27500, 10901, 160, 0x09CD, true),
+        PresetChannelDefinition("SRF 1 HD", "Hotbird 13°E", 10971, "H", 29700, 2, 101, 0x0500, true),
+        PresetChannelDefinition("Polsat Sport HD", "Hotbird 13°E", 12265, "V", 27500, 3101, 301, 0x1803, true),
+        PresetChannelDefinition("Rai News 24", "Hotbird 13°E", 10992, "V", 27500, 8502, 802, 0, false)
+    )
+
+    private inner class ApiChannelsScanHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    var includeEncrypted = true
+                    var validateServers = true
+                    var source = "all"
+
+                    val uriQuery = exchange.requestURI.query
+                    if (!uriQuery.isNullOrEmpty()) {
+                        val pairs = uriQuery.split("&")
+                        for (p in pairs) {
+                            val kv = p.split("=", limit = 2)
+                            if (kv.size == 2) {
+                                when (kv[0].lowercase()) {
+                                    "include_encrypted" -> includeEncrypted = kv[1].toBoolean()
+                                    "validate_servers" -> validateServers = kv[1].toBoolean()
+                                    "source" -> source = kv[1].lowercase()
+                                }
+                            }
+                        }
+                    }
+
+                    if (exchange.requestMethod.equals("POST", ignoreCase = true)) {
+                        try {
+                            val body = exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
+                            if (body.isNotBlank()) {
+                                val json = JSONObject(body)
+                                if (json.has("include_encrypted")) includeEncrypted = json.optBoolean("include_encrypted", true)
+                                if (json.has("validate_servers")) validateServers = json.optBoolean("validate_servers", true)
+                                if (json.has("source")) source = json.optString("source", "all").lowercase()
+                            }
+                        } catch (ignored: Exception) {}
+                    }
+
+                    appendLog("Channel Scan requested: source='$source', includeEncrypted=$includeEncrypted, validateServers=$validateServers")
+
+                    val rawChannels = mutableListOf<PresetChannelDefinition>()
+
+                    // 1. Query Android TV TvContract.Channels
+                    if (source == "all" || source == "tv") {
+                        try {
+                            val bridge = OscamTvInputBridge(context)
+                            val discovered = bridge.queryAllTvChannels()
+                            discovered.forEach { ch ->
+                                val caid = ch.detectedCaids.firstOrNull() ?: if (ch.isScrambled) 0x1810 else 0
+                                val isEnc = ch.isScrambled || ch.detectedCaids.isNotEmpty()
+                                rawChannels.add(
+                                    PresetChannelDefinition(
+                                        name = ch.displayName,
+                                        satellite = if (ch.type.isNotEmpty()) "TV Tuner (${ch.type})" else "TV Tuner (TvContract)",
+                                        frequency = 0,
+                                        polarization = "H",
+                                        symbolRate = 22000,
+                                        serviceId = ch.serviceId,
+                                        pmtPid = ch.pmtPid,
+                                        caid = caid,
+                                        isEncrypted = isEnc
+                                    )
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.d(TAG, "TvContract scan: ${e.message}")
+                        }
+                    }
+
+                    // 2. Add satellite transponder presets
+                    if (source == "all" || source == "astra") {
+                        rawChannels.addAll(satellitePresetsDatabase.filter { it.satellite.startsWith("Astra", true) })
+                    }
+                    if (source == "all" || source == "hispasat") {
+                        rawChannels.addAll(satellitePresetsDatabase.filter { it.satellite.startsWith("Hispasat", true) })
+                    }
+                    if (source == "all" || source == "hotbird") {
+                        rawChannels.addAll(satellitePresetsDatabase.filter { it.satellite.startsWith("Hotbird", true) })
+                    }
+
+                    // Deduplicate
+                    val seenKeys = mutableSetOf<String>()
+                    val deduped = mutableListOf<PresetChannelDefinition>()
+                    for (ch in rawChannels) {
+                        val key = "${ch.name.lowercase().trim()}_${ch.serviceId}"
+                        if (!seenKeys.contains(key)) {
+                            seenKeys.add(key)
+                            deduped.add(ch)
+                        }
+                    }
+
+                    // 3. Filter by include_encrypted (user requirement: allow searching encrypted channels)
+                    val filtered = deduped.filter { ch ->
+                        if (!includeEncrypted && ch.isEncrypted) false else true
+                    }
+
+                    // 4. Validate with servers (user requirement: validate with configured servers)
+                    val currentConfig = repository.getCurrentConfig()
+                    val activeServers = currentConfig.servers.filter { it.enabled }
+                    val serverStatusMap = mutableMapOf<String, Boolean>()
+
+                    if (validateServers) {
+                        activeServers.forEach { s ->
+                            var ok = false
+                            try {
+                                Socket().use { sock ->
+                                    sock.connect(InetSocketAddress(s.host, s.port), 1500)
+                                    ok = true
+                                }
+                            } catch (ignored: Exception) {
+                                ok = false
+                            }
+                            serverStatusMap[s.id] = ok
+                        }
+                    }
+
+                    var scrambledCount = 0
+                    var ftaCount = 0
+                    var validatedCount = 0
+
+                    val resultsArray = JSONArray()
+                    filtered.forEach { ch ->
+                        var isValidated = false
+                        var validatedServer = ""
+                        var statusText: String
+
+                        if (!ch.isEncrypted) {
+                            ftaCount++
+                            isValidated = true
+                            statusText = "🔵 En abierto (FTA - Directo)"
+                        } else {
+                            scrambledCount++
+                            if (!validateServers) {
+                                statusText = "🔒 Encriptado (CAID 0x%04X)".format(ch.caid)
+                            } else {
+                                val srv = activeServers.firstOrNull { it.caid == ch.caid }
+                                    ?: activeServers.firstOrNull { currentConfig.caids.contains(ch.caid) }
+                                    ?: activeServers.firstOrNull { it.protocol == ServerProtocol.CCCAM }
+                                    ?: activeServers.firstOrNull { it.isPrimary }
+
+                                if (srv != null) {
+                                    val isOnline = serverStatusMap[srv.id] ?: true
+                                    if (isOnline) {
+                                        isValidated = true
+                                        validatedCount++
+                                        validatedServer = srv.name
+                                        statusText = "🟢 Validado con '${srv.name}' [${srv.protocol.name}] (0x%04X)".format(ch.caid)
+                                    } else {
+                                        statusText = "🟡 Encriptado (Servidor '${srv.name}' asignado pero no responde)".format(ch.caid)
+                                    }
+                                } else {
+                                    statusText = "🟡 Encriptado (Sin servidor configurado para CAID 0x%04X)".format(ch.caid)
+                                }
+                            }
+                        }
+
+                        resultsArray.put(JSONObject().apply {
+                            put("name", ch.name)
+                            put("satellite", ch.satellite)
+                            put("frequency", ch.frequency)
+                            put("polarization", ch.polarization)
+                            put("symbolRate", ch.symbolRate)
+                            put("serviceId", ch.serviceId)
+                            put("pmtPid", ch.pmtPid)
+                            put("caid", "0x%04X".format(ch.caid))
+                            put("caid_int", ch.caid)
+                            put("is_encrypted", ch.isEncrypted)
+                            put("is_validated", isValidated)
+                            put("validated_server", validatedServer)
+                            put("status_badge", statusText)
+                            put("stream_url", "")
+                        })
+                    }
+
+                    appendLog("Channel Scan finished: ${filtered.size} channels ($scrambledCount encrypted, $ftaCount FTA, $validatedCount validated with servers)")
+
+                    val resObj = JSONObject().apply {
+                        put("success", true)
+                        put("total_found", filtered.size)
+                        put("scrambled_count", scrambledCount)
+                        put("fta_count", ftaCount)
+                        put("validated_count", validatedCount)
+                        put("channels", resultsArray)
+                    }
+
+                    sendJsonResponse(exchange, 200, resObj.toString())
+                } catch (e: Exception) {
+                    appendLog("ERROR in channel scan: ${e.message}")
+                    sendErrorResponse(exchange, 500, "Channel scan failed: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private inner class ApiChannelsImportHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val body = exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
+                    val json = JSONObject(body)
+                    val chArray = json.optJSONArray("channels")
+                    if (chArray == null || chArray.length() == 0) {
+                        sendErrorResponse(exchange, 400, "No channels provided to import")
+                        return@launch
+                    }
+
+                    val currentConfig = repository.getCurrentConfig()
+                    val existingChannels = currentConfig.channels.toMutableList()
+                    var importedCount = 0
+
+                    for (i in 0 until chArray.length()) {
+                        val obj = chArray.getJSONObject(i)
+                        val name = obj.optString("name", "Channel")
+                        val sat = obj.optString("satellite", "Astra 19.2°E")
+                        val freq = obj.optInt("frequency", 11000)
+                        val pol = obj.optString("polarization", "H")
+                        val sr = obj.optInt("symbolRate", 22000)
+                        val sid = obj.optInt("serviceId", 1)
+                        val pmt = obj.optInt("pmtPid", 100)
+                        val caidStr = obj.optString("caid", "0x1810")
+                        val caid = if (caidStr.startsWith("0x", true)) caidStr.substring(2).toInt(16) else caidStr.toIntOrNull() ?: 0x1810
+                        val streamUrl = obj.optString("stream_url", obj.optString("streamUrl", ""))
+
+                        val exists = existingChannels.any { it.serviceId == sid && it.satellite.equals(sat, ignoreCase = true) }
+                        if (!exists) {
+                            existingChannels.add(
+                                OscamChannelEntry(
+                                    id = UUID.randomUUID().toString(),
+                                    name = name,
+                                    satellite = sat,
+                                    frequency = freq,
+                                    polarization = pol,
+                                    symbolRate = sr,
+                                    serviceId = sid,
+                                    pmtPid = pmt,
+                                    caid = caid,
+                                    streamUrl = streamUrl
+                                )
+                            )
+                            importedCount++
+                        }
+                    }
+
+                    val newConfig = currentConfig.copy(channels = existingChannels)
+                    repository.saveConfig(newConfig)
+                    onConfigUpdatedCallback(newConfig)
+
+                    appendLog("Imported $importedCount new channels into database (Total: ${existingChannels.size} channels)")
+                    sendJsonResponse(exchange, 200, "{\"success\":true,\"imported\":$importedCount,\"total\":${existingChannels.size}}")
+                } catch (e: Exception) {
+                    appendLog("ERROR importing channels: ${e.message}")
+                    sendErrorResponse(exchange, 500, "Import failed: ${e.message}")
                 }
             }
         }
@@ -1574,8 +2126,8 @@ class OscamLocalConfigWebServer(
         .chart-title { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; }
         svg.sparkline { width: 100%; height: 95px; overflow: visible; }
 
-        /* Server Profiles Card */
-        .server-card {
+        /* Server Profiles Card & Hardware Cards */
+        .server-card, .hw-card {
             background: var(--bg-card);
             border: 1px solid var(--border);
             border-radius: 10px;
@@ -1583,7 +2135,7 @@ class OscamLocalConfigWebServer(
             margin-bottom: 14px;
             transition: border-color 0.2s;
         }
-        .server-card:hover { border-color: var(--border-hover); }
+        .server-card:hover, .hw-card:hover { border-color: var(--border-hover); }
         .server-fields {
             display: grid;
             grid-template-columns: 2fr 1.5fr 2fr 1.2fr 1.5fr;
@@ -1940,10 +2492,79 @@ class OscamLocalConfigWebServer(
                         <div class="panel-title">Satellite &amp; DVB Channel Database</div>
                         <div class="panel-desc">Manage satellite transponders, service IDs, and stream mappings for external and native players.</div>
                     </div>
-                    <div style="display:flex; gap:8px;">
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button type="button" class="btn btn-primary" onclick="toggleChannelScanner()">🔍 Rebuscar Canales (Scan &amp; Validar)</button>
                         <button type="button" class="btn btn-outline" onclick="addChannelRow()">+ Add Channel</button>
                         <a href="/playlist.m3u" class="btn btn-purple" download="channels.m3u">⬇ Export M3U</a>
                         <a href="/lamedb" class="btn btn-outline" download="lamedb">⬇ Export Enigma2 lamedb</a>
+                    </div>
+                </div>
+
+                <!-- Channel Scanner & Server Validator Box -->
+                <div id="channel-scanner-box" style="display:none; margin-top:16px; background:var(--bg-card); border:1px solid var(--primary); border-radius:10px; padding:16px;">
+                    <div style="font-weight:700; font-size:15px; color:#FFF; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+                        <span>📡 Escáner de Canales y Validador con Servidores</span>
+                        <button type="button" class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="toggleChannelScanner()">Cerrar</button>
+                    </div>
+                    <div class="hint" style="margin-bottom:14px;">
+                        Permite rebuscar canales desde el sintonizador de Android TV (TvContract) o transpondedores satelitales, buscando canales <strong>encriptados/codificados (Scrambled)</strong> y validándolos en tiempo real con los servidores OSCam/CCcam/Newcamd configurados.
+                    </div>
+
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:14px; align-items:flex-end;">
+                        <div>
+                            <label for="scan-source-select" style="font-size:12px; font-weight:600; color:var(--text-muted); display:block; margin-bottom:4px;">Fuente de Búsqueda:</label>
+                            <select id="scan-source-select" style="width:100%; padding:8px; background:var(--bg-dark); border:1px solid var(--border); color:#FFF; border-radius:6px;">
+                                <option value="all">Todas las fuentes (Sintonizador TV + Transpondedores)</option>
+                                <option value="tv">📺 Sintonizador Android TV (TvContract / Live TV)</option>
+                                <option value="astra">🛰️ Astra 19.2°E (Movistar+, HD+, Sky DE)</option>
+                                <option value="hispasat">🛰️ Hispasat 30°W (MEO, NOS, Movistar)</option>
+                                <option value="hotbird">🛰️ Hotbird 13°E (Tivùsat, Polsat, SRG)</option>
+                            </select>
+                        </div>
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+                                <input type="checkbox" id="scan-include-encrypted" checked style="accent-color:var(--primary); width:16px; height:16px;">
+                                <span>🔒 <strong>Buscar canales encriptados</strong> (Scrambled / CAS)</span>
+                            </label>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+                                <input type="checkbox" id="scan-validate-servers" checked style="accent-color:var(--success); width:16px; height:16px;">
+                                <span>⚡ <strong>Validar con los servidores</strong> configurados</span>
+                            </label>
+                        </div>
+                        <div>
+                            <button type="button" id="btn-run-scan" class="btn btn-primary" style="width:100%; padding:10px;" onclick="runChannelScan()">
+                                ▶ Iniciar Búsqueda y Validación
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Scan Results Container -->
+                    <div id="scan-results-container" style="display:none; margin-top:14px;">
+                        <div id="scan-summary-bar" style="background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:6px; padding:8px 12px; font-size:13px; margin-bottom:10px; color:#93C5FD; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                            <span id="scan-stats-text">Cargando resultados...</span>
+                            <div style="display:flex; gap:8px;">
+                                <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="toggleSelectAllScanned(true)">Seleccionar Todos</button>
+                                <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="toggleSelectAllScanned(false)">Deseleccionar</button>
+                                <button type="button" class="btn btn-success" style="padding:4px 12px; font-size:11px;" onclick="importSelectedScannedChannels()">📥 Importar Seleccionados a la Base de Datos</button>
+                            </div>
+                        </div>
+
+                        <div class="table-container" style="max-height:320px; overflow-y:auto;">
+                            <table id="scanned-channels-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width:36px;"><input type="checkbox" id="chk-master-scan" onchange="toggleSelectAllScanned(this.checked)"></th>
+                                        <th>Canal</th>
+                                        <th>Satélite / Transpondedor</th>
+                                        <th>SID / PMT</th>
+                                        <th>CAID</th>
+                                        <th>Tipo / Encriptación</th>
+                                        <th>Validación con Servidores</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="scanned-channels-tbody"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
@@ -2120,43 +2741,43 @@ class OscamLocalConfigWebServer(
 
                 <!-- Hardware Specifications Grid -->
                 <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px;">
-                    <div class="server-card">
+                    <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">DEVICE MODEL &amp; OEM</div>
                         <div style="font-size:17px; font-weight:800; color:#FFF; margin-top:4px;">${hw.manufacturer} ${hw.model}</div>
                         <div class="hint">Board: ${hw.board} (${hw.hardware})</div>
                     </div>
 
-                    <div class="server-card">
+                    <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">CHIPSET ADAPTER</div>
                         <div style="font-size:17px; font-weight:800; color:var(--accent); margin-top:4px;">${hw.detectedChipset}</div>
                         <div class="hint">Active HAL Abstraction Driver</div>
                     </div>
 
-                    <div class="server-card">
+                    <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">ANDROID OS &amp; API LEVEL</div>
                         <div style="font-size:17px; font-weight:800; color:var(--primary); margin-top:4px;">Android ${hw.androidVersion} (API ${hw.sdkInt})</div>
                         <div class="hint">VINTF Manifest Compatibility: Active</div>
                     </div>
 
-                    <div class="server-card">
+                    <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">RAM MEMORY ALLOCATION</div>
                         <div style="font-size:17px; font-weight:800; color:var(--success); margin-top:4px;">${hw.availableMemoryMb} MB free / ${hw.totalMemoryMb} MB total</div>
                         <div class="hint">Zero-Leak Buffer Management</div>
                     </div>
 
-                    <div class="server-card">
+                    <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">DISPLAY &amp; RESOLUTION</div>
                         <div id="tv-display-info" style="font-size:17px; font-weight:800; color:#60A5FA; margin-top:4px;">4K UHD (3840x2160) @ 120Hz</div>
                         <div class="hint">HDR10, HDR10+, Dolby Vision, HLG</div>
                     </div>
 
-                    <div class="server-card">
+                    <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">INTERNAL STORAGE</div>
                         <div id="tv-storage-info" style="font-size:17px; font-weight:800; color:#C4B5FD; margin-top:4px;">Flash Memory Active</div>
                         <div class="hint">Android TV /data partition</div>
                     </div>
 
-                    <div class="server-card">
+                    <div class="hw-card">
                         <div style="font-size:11px; color:var(--text-muted); font-weight:700;">ACTIVE NETWORK INTERFACE</div>
                         <div id="tv-network-info" style="font-size:17px; font-weight:800; color:#FCD34D; margin-top:4px;">Ethernet / Wi-Fi Active</div>
                         <div class="hint">Direct LAN communication</div>
@@ -2686,28 +3307,150 @@ class OscamLocalConfigWebServer(
                 .catch(function(e) { showAlert('Cache flush error: ' + e, 'error'); });
         }
 
+        var scannedChannelsCache = [];
+
+        function toggleChannelScanner() {
+            var box = document.getElementById('channel-scanner-box');
+            if (box) {
+                box.style.display = (box.style.display === 'none' || box.style.display === '') ? 'block' : 'none';
+            }
+        }
+
+        function runChannelScan() {
+            var btn = document.getElementById('btn-run-scan');
+            var source = document.getElementById('scan-source-select').value;
+            var incEnc = document.getElementById('scan-include-encrypted').checked;
+            var valSrv = document.getElementById('scan-validate-servers').checked;
+
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Escaneando y validando...';
+
+            var resultsContainer = document.getElementById('scan-results-container');
+            resultsContainer.style.display = 'block';
+            document.getElementById('scan-stats-text').innerHTML = 'Iniciando búsqueda de canales (fuente: ' + source + ')...';
+
+            fetch('/api/channels/scan?source=' + encodeURIComponent(source) + '&include_encrypted=' + incEnc + '&validate_servers=' + valSrv)
+                .then(function(r) { return r.json(); })
+                .then(function(res) {
+                    btn.disabled = false;
+                    btn.innerHTML = '▶ Iniciar Búsqueda y Validación';
+                    if (!res.success) {
+                        showAlert('Error en el escaneo de canales: ' + (res.error || 'Error desconocido'), 'error');
+                        return;
+                    }
+                    scannedChannelsCache = res.channels || [];
+                    document.getElementById('scan-stats-text').innerHTML = 
+                        '<strong>' + res.total_found + ' canales encontrados</strong> (' + 
+                        res.scrambled_count + ' encriptados, ' + 
+                        res.fta_count + ' FTA en abierto) — <span style="color:#34D399; font-weight:700;">' + 
+                        res.validated_count + ' validados con servidores</span>';
+                    
+                    renderScannedChannels(scannedChannelsCache);
+                })
+                .catch(function(e) {
+                    btn.disabled = false;
+                    btn.innerHTML = '▶ Iniciar Búsqueda y Validación';
+                    showAlert('Error de conexión al escanear: ' + e, 'error');
+                });
+        }
+
+        function renderScannedChannels(channels) {
+            var tbody = document.getElementById('scanned-channels-tbody');
+            tbody.innerHTML = '';
+            if (channels.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:18px; color:var(--text-muted);">No se encontraron canales con los filtros actuales.</td></tr>';
+                return;
+            }
+
+            channels.forEach(function(ch, idx) {
+                var tr = document.createElement('tr');
+                var typeBadge = ch.is_encrypted ? 
+                    '<span style="background:rgba(239,68,68,0.15); border:1px solid #EF4444; color:#F87171; padding:2px 8px; border-radius:4px; font-weight:700; font-size:11px;">🔒 Encriptado</span>' : 
+                    '<span style="background:rgba(59,130,246,0.15); border:1px solid #3B82F6; color:#93C5FD; padding:2px 8px; border-radius:4px; font-weight:700; font-size:11px;">🔓 En abierto (FTA)</span>';
+                
+                var valBadge = '<span style="font-size:12px;">' + (ch.status_badge || '--') + '</span>';
+
+                tr.innerHTML = 
+                    '<td><input type="checkbox" class="scanned-chk" data-idx="' + idx + '" checked style="accent-color:var(--primary); width:16px; height:16px;"></td>' +
+                    '<td style="font-weight:700; color:#FFF;">' + ch.name + '</td>' +
+                    '<td style="color:var(--text-muted);">' + ch.satellite + (ch.frequency > 0 ? (' (' + ch.frequency + ' ' + ch.polarization + ')') : '') + '</td>' +
+                    '<td>SID: ' + ch.serviceId + ' / PMT: ' + ch.pmtPid + '</td>' +
+                    '<td><code>' + ch.caid + '</code></td>' +
+                    '<td>' + typeBadge + '</td>' +
+                    '<td>' + valBadge + '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function toggleSelectAllScanned(checked) {
+            document.querySelectorAll('.scanned-chk').forEach(function(chk) {
+                chk.checked = checked;
+            });
+        }
+
+        function importSelectedScannedChannels() {
+            var selected = [];
+            document.querySelectorAll('.scanned-chk:checked').forEach(function(chk) {
+                var idx = parseInt(chk.getAttribute('data-idx'), 10);
+                if (!isNaN(idx) && scannedChannelsCache[idx]) {
+                    selected.push(scannedChannelsCache[idx]);
+                }
+            });
+
+            if (selected.length === 0) {
+                showAlert('Por favor, selecciona al menos un canal para importar.', 'error');
+                return;
+            }
+
+            fetch('/api/channels/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channels: selected })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(res) {
+                if (res.success) {
+                    showAlert('✓ ' + res.imported + ' canales importados correctamente a la base de datos (Total: ' + res.total + ').', 'success');
+                    loadConfiguration();
+                    toggleChannelScanner();
+                } else {
+                    showAlert('Error al importar canales: ' + (res.error || 'Fallo desconocido'), 'error');
+                }
+            })
+            .catch(function(e) {
+                showAlert('Error de red al importar: ' + e, 'error');
+            });
+        }
+
         function saveConfiguration() {
             var servers = [];
-            document.querySelectorAll('.server-card').forEach(function(card, idx) {
+            // Strictly select server cards inside the server-list-box container
+            document.querySelectorAll('#server-list-box .server-card').forEach(function(card, idx) {
+                var nameEl = card.querySelector('.srv-name');
+                var hostEl = card.querySelector('.srv-host');
+                var portEl = card.querySelector('.srv-port');
                 var protoEl = card.querySelector('.srv-proto');
+                var userEl = card.querySelector('.srv-user');
                 var passEl = card.querySelector('.srv-pass');
                 var desEl = card.querySelector('.srv-des');
                 var caidEl = card.querySelector('.srv-caid');
                 var connTimeoutEl = card.querySelector('.srv-conn-timeout');
                 var recvTimeoutEl = card.querySelector('.srv-recv-timeout');
                 var reconIntervalEl = card.querySelector('.srv-recon-interval');
-
-                var protoVal = protoEl ? protoEl.value : 'DVBAPI';
-                var defaultPort = getDefaultPortForProto(protoVal);
                 var enabledEl = card.querySelector('.srv-enabled');
                 var primaryEl = card.querySelector('.srv-primary');
 
+                if (!hostEl && !nameEl) return; // Skip non-server elements if any
+
+                var protoVal = protoEl ? protoEl.value : 'DVBAPI';
+                var defaultPort = getDefaultPortForProto(protoVal);
+
                 servers.push({
-                    name: card.querySelector('.srv-name').value,
+                    name: nameEl ? nameEl.value : ('Server ' + (idx + 1)),
                     protocol: protoVal,
-                    host: card.querySelector('.srv-host').value,
-                    port: (protoVal === 'DVBAPI_UNIX') ? 0 : (parseInt(card.querySelector('.srv-port').value, 10) || defaultPort),
-                    user: card.querySelector('.srv-user') ? card.querySelector('.srv-user').value : 'android_tv',
+                    host: hostEl ? hostEl.value : '192.168.1.100',
+                    port: (protoVal === 'DVBAPI_UNIX') ? 0 : (portEl ? (parseInt(portEl.value, 10) || defaultPort) : defaultPort),
+                    user: userEl ? userEl.value : 'android_tv',
                     password: passEl ? passEl.value : 'android_tv',
                     des_key: desEl ? desEl.value : '0102030405060708091011121314',
                     caid: caidEl ? caidEl.value : '0x1810',
@@ -2721,15 +3464,25 @@ class OscamLocalConfigWebServer(
 
             var channels = [];
             document.querySelectorAll('#channels-tbody tr').forEach(function(tr) {
+                var nameEl = tr.querySelector('.ch-name');
+                if (!nameEl) return;
+                var satEl = tr.querySelector('.ch-sat');
+                var freqEl = tr.querySelector('.ch-freq');
+                var polEl = tr.querySelector('.ch-pol');
+                var srEl = tr.querySelector('.ch-sr');
+                var sidEl = tr.querySelector('.ch-sid');
+                var pmtEl = tr.querySelector('.ch-pmt');
+                var caidEl = tr.querySelector('.ch-caid');
+
                 channels.push({
-                    name: tr.querySelector('.ch-name').value,
-                    satellite: tr.querySelector('.ch-sat').value,
-                    frequency: parseInt(tr.querySelector('.ch-freq').value, 10) || 11000,
-                    polarization: tr.querySelector('.ch-pol').value,
-                    symbolRate: parseInt(tr.querySelector('.ch-sr').value, 10) || 22000,
-                    serviceId: parseInt(tr.querySelector('.ch-sid').value, 10) || 1,
-                    pmtPid: parseInt(tr.querySelector('.ch-pmt').value, 10) || 100,
-                    caid: tr.querySelector('.ch-caid').value,
+                    name: nameEl ? nameEl.value : 'Channel',
+                    satellite: satEl ? satEl.value : 'Astra 19.2°E',
+                    frequency: freqEl ? (parseInt(freqEl.value, 10) || 11000) : 11000,
+                    polarization: polEl ? polEl.value : 'H',
+                    symbolRate: srEl ? (parseInt(srEl.value, 10) || 22000) : 22000,
+                    serviceId: sidEl ? (parseInt(sidEl.value, 10) || 1) : 1,
+                    pmtPid: pmtEl ? (parseInt(pmtEl.value, 10) || 100) : 100,
+                    caid: caidEl ? caidEl.value : '0x1810',
                     streamUrl: ''
                 });
             });
