@@ -11,6 +11,7 @@
 
 #include "NativeBridge.h"
 #include "../bridge/include/BridgeLogger.h"
+#include "../bridge/include/SatellitePmtParser.h"
 
 #include <chrono>
 #include <cstring>
@@ -515,8 +516,23 @@ static void impl_nativeSetSoftwareCw(JNIEnv* env, jint pid, jint parity, jbyteAr
     }
 }
 
+static jboolean impl_nativeIsPmtScrambled(JNIEnv* env, jbyteArray pmtData) {
+    if (!pmtData) return JNI_FALSE;
+    jsize len = env->GetArrayLength(pmtData);
+    if (len < 16) return JNI_FALSE;
+    jbyte* bytes = env->GetByteArrayElements(pmtData, nullptr);
+    if (!bytes) return JNI_FALSE;
+    auto optInfo = oscam::bridge::SatellitePmtParser::parsePmtSection(
+        reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len));
+    env->ReleaseByteArrayElements(pmtData, bytes, JNI_ABORT);
+    if (optInfo) {
+        return optInfo->isScrambled() ? JNI_TRUE : JNI_FALSE;
+    }
+    return JNI_FALSE;
+}
+
 // ---------------------------------------------------------------------------
-// 1. Exports for .OscamNativeBridge
+// 1. Exports for com.lizarragaeus.oscambridge.OscamNativeBridge
 // ---------------------------------------------------------------------------
 
 JNIEXPORT jboolean JNICALL
@@ -607,6 +623,12 @@ JNIEXPORT void JNICALL
 Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeSetSoftwareCw(
     JNIEnv* env, jobject /*thiz*/, jint pid, jint parity, jbyteArray cw) {
     impl_nativeSetSoftwareCw(env, pid, parity, cw);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeIsPmtScrambled(
+    JNIEnv* env, jobject /*thiz*/, jbyteArray pmtData) {
+    return impl_nativeIsPmtScrambled(env, pmtData);
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +723,12 @@ JNIEXPORT void JNICALL
 Java_com_oscam_cas_OscamNativeBridge_nativeSetSoftwareCw(
     JNIEnv* env, jobject thiz, jint pid, jint parity, jbyteArray cw) {
     Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeSetSoftwareCw(env, thiz, pid, parity, cw);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeIsPmtScrambled(
+    JNIEnv* env, jobject thiz, jbyteArray pmtData) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeIsPmtScrambled(env, thiz, pmtData);
 }
 
 } // extern "C"

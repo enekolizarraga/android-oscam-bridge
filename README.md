@@ -1,16 +1,16 @@
-# Android TV ↔ OSCam CAS Bridge (``)
+# Android TV ↔ OSCam CAS Bridge (`com.lizarragaeus.oscambridge`)
 
 [![C++20](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![Android TV](https://img.shields.io/badge/Android%20TV-API%2030--34%20(Android%2011--14)-green.svg)](https://developer.android.com/tv)
-[![Package](https://img.shields.io/badge/Package--blueviolet.svg)](java/AndroidManifest.xml)
+[![Package](https://img.shields.io/badge/Package-com.lizarragaeus.oscambridge-blueviolet.svg)](java/AndroidManifest.xml)
 [![SoC](https://img.shields.io/badge/SoC-Amlogic%20%7C%20MediaTek%20%7C%20Realtek%20%7C%20Broadcom%20%7C%20Synaptics%20%7C%20Novatek-purple.svg)](#supported-hardware-soc-matrix)
 [![Delivery](https://img.shields.io/badge/Delivery-DVB--S%2FS2%2FS2X%20(Default)%20%7C%20DVB--T2%20%7C%20DVB--C-orange.svg)](#broadcast-delivery-systems)
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0%20(Non--Commercial)-red.svg)](LICENSE.md)
 
 An enterprise-grade, high-performance **Android TV Conditional Access System (CAS)** HAL service and companion bridge that seamlessly connects the native Android Tuner and MediaCas framework to an **OSCam** card server through a professional multi-protocol suite: **DVBAPI (TCP / UNIX Domain Socket)**, **Camd35 / Cs378x (TCP Native)**, **Radegast v3**, **Newcamd v5.25**, **CCcam v2.3.0**, and **OSCam WebIF REST API**.
 
-**Author**: lizarragaeus  
-**Package ID**: ``  
+**Author**: Eneko Lizarraga  
+**Package ID**: `com.lizarragaeus.oscambridge`  
 **License**: Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0). Strictly prohibited for sale or commercial distribution; attribution is mandatory.
 
 ---
@@ -123,7 +123,7 @@ The bridge features a professional, industrial-grade multi-protocol connection l
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                        ANDROID TV CAS BRIDGE ENGINE ()                     │
+│                        ANDROID TV CAS BRIDGE ENGINE (com.lizarragaeus.oscambridge)                     │
 │                                                                                                        │
 │  [Method 1: DVBAPI TCP]     ──► Native OSCam DVBAPI (TCP:9000)        ──► High-speed network socket    │
 │  [Method 2: DVBAPI UNIX]    ──► Local Domain Socket (/tmp/camd.socket)──► Zero-network local overhead  │
@@ -518,5 +518,5 @@ See the full legal text in [**`LICENSE.md`**](LICENSE.md).
 
 ### Core License Conditions:
 1. **STRICTLY NON-COMMERCIAL (FORBIDDEN TO SELL)**: You may not use this code, compiled binaries, or derivative works for commercial purposes or financial gain. Selling, renting, charging for access, or monetizing this project in any way is strictly forbidden.
-2. **MANDATORY ATTRIBUTION (CREDITS REQUIRED)**: Any distribution, fork, or modification must retain and prominently display full author credits to **`lizarragaeus`** and the original project repository **`android-oscam-bridge` (``)**.
+2. **MANDATORY ATTRIBUTION (CREDITS REQUIRED)**: Any distribution, fork, or modification must retain and prominently display full author credits to **`lizarragaeus`** and the original project repository **`android-oscam-bridge` (`com.lizarragaeus.oscambridge`)**.
 3. **SHARE-ALIKE**: If you remix, transform, or build upon the material, you must distribute your contributions under the exact same non-commercial license (CC BY-NC-SA 4.0).

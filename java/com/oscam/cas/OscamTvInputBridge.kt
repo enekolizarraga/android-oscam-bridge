@@ -126,6 +126,85 @@ class OscamTvInputBridge(private val context: Context) {
     }
 
     /**
+     * Inspects channel scrambling status.
+     * Determines whether the channel requires CAS descrambling or is Free-To-Air (FTA).
+     *
+     * @param channelUri The channel URI from Android TV Input Framework.
+     * @param knownChannels Configured list of channel entries.
+     * @return true if channel is scrambled (requires bridge), false if FTA (clear broadcast).
+     */
+    fun isChannelScrambled(
+        channelUri: android.net.Uri,
+        knownChannels: List<OscamChannelEntry> = emptyList()
+    ): Boolean {
+        // 1. Check known channel database (by service ID or URI)
+        val channelIdStr = channelUri.lastPathSegment
+        val channelId = channelIdStr?.toLongOrNull() ?: -1L
+
+        for (ch in knownChannels) {
+            if (ch.serviceId.toLong() == channelId || ch.streamUrl == channelUri.toString()) {
+                if (ch.caid == 0) {
+                    Log.i(TAG, "Channel '${ch.name}' (SID ${ch.serviceId}) explicitly configured as FTA (CAID 0x0000). Bypass bridge.")
+                    return false
+                }
+                return true
+            }
+        }
+
+        // 2. Query Android TV ContentProvider (TvContract.Channels)
+        try {
+            val projection = arrayOf(
+                android.media.tv.TvContract.Channels._ID,
+                android.media.tv.TvContract.Channels.COLUMN_DISPLAY_NAME,
+                android.media.tv.TvContract.Channels.COLUMN_SERVICE_TYPE,
+                android.media.tv.TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA
+            )
+            context.contentResolver.query(channelUri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_DISPLAY_NAME)
+                    val name = if (nameIdx >= 0) cursor.getString(nameIdx) else "Unknown"
+
+                    val internalDataIdx = cursor.getColumnIndex(android.media.tv.TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA)
+                    if (internalDataIdx >= 0) {
+                        val providerData = cursor.getBlob(internalDataIdx)
+                        if (providerData != null && providerData.size >= 16) {
+                            // If PMT section is stored in provider data, parse with nativeIsPmtScrambled
+                            val scrambled = OscamNativeBridge.nativeIsPmtScrambled(providerData)
+                            Log.i(TAG, "Channel '$name' PMT parsed: scrambled=$scrambled")
+                            return scrambled
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "TvContract query for channel $channelUri: ${e.message}")
+        }
+
+        // Default: If no CAIDs found, assume not scrambled (FTA) to protect clear channels
+        return false
+    }
+
+    /**
+     * Binds broadcast channel only if it is scrambled.
+     * For FTA channels, releases active CAS sessions and allows direct TV hardware playback.
+     */
+    fun bindChannelIfScrambled(
+        channelUri: android.net.Uri,
+        targetCaid: Int,
+        knownChannels: List<OscamChannelEntry> = emptyList()
+    ): Boolean {
+        val scrambled = isChannelScrambled(channelUri, knownChannels)
+        if (!scrambled) {
+            Log.i(TAG, "FTA / Clear channel detected ($channelUri). Bypassing CAS bridge; direct TV hardware decoding engaged.")
+            releaseChannel()
+            return true
+        }
+
+        Log.i(TAG, "Scrambled channel detected ($channelUri). Engaging MediaCas bridge with CAID 0x%04X.".format(targetCaid))
+        return bindChannel(targetCaid)
+    }
+
+    /**
      * Releases active CAS session when tuning to another channel.
      */
     fun releaseChannel() {

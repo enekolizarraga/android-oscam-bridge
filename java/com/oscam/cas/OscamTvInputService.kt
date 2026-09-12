@@ -41,6 +41,7 @@ class OscamTvInputService : TvInputService() {
         private val bridge: OscamTvInputBridge
     ) : Session(context) {
 
+        private val repository = OscamConfigRepository(context)
         private var activeUri: Uri? = null
 
         override fun onRelease() {
@@ -66,15 +67,30 @@ class OscamTvInputService : TvInputService() {
             // Notify TIF framework that video is preparing
             notifyVideoUnavailable(TvInputService.VIDEO_UNAVAILABLE_REASON_BUFFERING)
 
-            // Default to primary satellite CAID (e.g. 0x1810 for Movistar+ or 0x1830 for HD+)
-            val caid = 0x1810
-            val success = bridge.bindChannel(caid)
+            val config = repository.getCurrentConfig()
+            val knownChannels = config.channels
+            val primaryCaid = config.caids.firstOrNull() ?: 0x1810
+
+            // Intelligent FTA vs Scrambled channel detection:
+            // If the channel is Free-To-Air (unencrypted), DO NOT engage the bridge or descrambler.
+            // The TV hardware demux & VPU play the clear stream natively.
+            val isScrambled = bridge.isChannelScrambled(channelUri, knownChannels)
+            if (!isScrambled) {
+                Log.i(TAG, "Channel is FTA (Free-To-Air / en abierto). Bypassing CAS bridge: TV plays clear stream natively: $channelUri")
+                bridge.releaseChannel()
+                notifyVideoAvailable()
+                return true
+            }
+
+            // Scrambled channel: engage MediaCas bridge and hardware descrambler
+            Log.i(TAG, "Channel is SCRAMBLED. Engaging OSCam bridge with CAID 0x%04X: $channelUri".format(primaryCaid))
+            val success = bridge.bindChannel(primaryCaid)
 
             if (success) {
                 notifyVideoAvailable()
-                Log.i(TAG, "Channel tuned and CAS session bound successfully: $channelUri")
+                Log.i(TAG, "Scrambled channel tuned and CAS session bound successfully: $channelUri")
             } else {
-                Log.w(TAG, "Channel tuned without CAS binding: $channelUri")
+                Log.w(TAG, "Scrambled channel tuned without CAS binding: $channelUri")
                 notifyVideoAvailable()
             }
 

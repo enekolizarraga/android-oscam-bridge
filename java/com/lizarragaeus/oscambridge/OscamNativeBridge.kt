@@ -64,6 +64,7 @@ object OscamNativeBridge {
     external fun nativeUnregisterCallback()
     external fun nativeDescrambleBuffer(buffer: ByteArray, offset: Int, length: Int): Int
     external fun nativeSetSoftwareCw(pid: Int, parity: Int, cw: ByteArray)
+    external fun nativeIsPmtScrambled(pmtData: ByteArray): Boolean
 
     /**
      * Queries current strongly-typed state from the native engine.

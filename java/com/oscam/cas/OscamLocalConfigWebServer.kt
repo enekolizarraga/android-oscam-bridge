@@ -690,35 +690,62 @@ class OscamLocalConfigWebServer(
                     val json = JSONObject(body)
                     val host = json.optString("host", "127.0.0.1").trim()
                     val port = json.optInt("port", 9000)
-                    val proto = json.optString("protocol", "DVBAPI")
+                    val protoStr = json.optString("protocol", "DVBAPI").trim()
+                    val user = json.optString("user", "android_tv").trim()
+                    val password = json.optString("password", "android_tv").trim()
+                    val desKey = json.optString("des_key", "0102030405060708091011121314").trim()
 
-                    appendLog("Testing connectivity to $proto server at $host:$port...")
+                    val parsedProto = ServerProtocol.fromString(protoStr)
+                    appendLog("Testing connectivity to ${parsedProto.name} server at $host:$port (user: $user)...")
                     val startTime = System.currentTimeMillis()
-                    
+
                     var ok = false
                     var err = ""
+                    var protocolDetail = ""
+
+                    // 1. Try protocol-level test via NativeBridge if available
                     try {
-                        Socket().use { s ->
-                            s.connect(InetSocketAddress(host, port), 3000)
-                            ok = true
+                        val testRes = OscamNativeBridge.nativeTestConnectionEx(
+                            host, port, parsedProto.protocolId, user, password, desKey, 3000
+                        )
+                        if (testRes.isNotEmpty()) {
+                            protocolDetail = testRes
+                            if (!testRes.startsWith("FAIL") && !testRes.startsWith("Error") && !testRes.startsWith("ERROR")) {
+                                ok = true
+                            } else {
+                                err = testRes
+                            }
                         }
-                    } catch (e: Exception) {
-                        ok = false
-                        err = e.message ?: "Connection refused"
+                    } catch (t: Throwable) {
+                        // Native library not loaded or mock environment: fallback to TCP socket
+                    }
+
+                    // 2. Fallback to raw TCP socket if native test was not performed
+                    if (!ok && err.isEmpty() && parsedProto != ServerProtocol.DVBAPI_UNIX) {
+                        try {
+                            Socket().use { s ->
+                                s.connect(InetSocketAddress(host, port), 3000)
+                                ok = true
+                            }
+                        } catch (e: Exception) {
+                            ok = false
+                            err = e.message ?: "Connection refused"
+                        }
                     }
 
                     val elapsed = System.currentTimeMillis() - startTime
 
                     if (ok) {
-                        appendLog("Ping test OK for $proto $host:$port (${elapsed}ms)")
+                        appendLog("Ping test OK for ${parsedProto.name} $host:$port (${elapsed}ms)${if (protocolDetail.isNotEmpty()) " [$protocolDetail]" else ""}")
                     } else {
-                        appendLog("Ping test FAILED for $proto $host:$port: $err")
+                        appendLog("Ping test FAILED for ${parsedProto.name} $host:$port: $err")
                     }
 
                     val resObj = JSONObject().apply {
                         put("success", ok)
                         put("latency_ms", elapsed)
-                        put("protocol", proto)
+                        put("protocol", parsedProto.name)
+                        put("detail", protocolDetail)
                         put("error", if (ok) "" else err)
                     }
 
@@ -1675,29 +1702,34 @@ class OscamLocalConfigWebServer(
             </div>
         </div>
 
-        <!-- TAB 2: Servers & Providers (CCcam / OSCam / Newcamd) -->
+        <!-- TAB 2: Servers & Providers (CCcam / OSCam / Newcamd / Camd35 / Radegast) -->
         <div class="tab-pane" id="tab-servers">
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">Server Profiles &amp; Provider Matrix (CCcam, OSCam &amp; Newcamd)</div>
-                        <div class="panel-desc">Configure your domestic CCcam, OSCam or Newcamd servers with dynamic hot-reload. Stored in TV storage without recompiling.</div>
+                        <div class="panel-title">Server Profiles &amp; Multi-Protocol Matrix</div>
+                        <div class="panel-desc">Manage CCcam, OSCam (TCP &amp; UNIX Socket), Newcamd, Camd35 (cs378x), Radegast &amp; WebIF connections directly from this web page. All credentials, ports, and parameters are fully configurable.</div>
                     </div>
                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                        <button type="button" class="btn btn-warning" onclick="addServerCard('CCCAM')">+ Add CCcam Server</button>
-                        <button type="button" class="btn btn-primary" onclick="addServerCard('DVBAPI')">+ Add OSCam Server</button>
-                        <button type="button" class="btn btn-purple" onclick="addServerCard('NEWCAMD')">+ Add Newcamd Server</button>
+                        <button type="button" class="btn btn-warning" onclick="addServerCard('CCCAM')">+ Add CCcam</button>
+                        <button type="button" class="btn btn-primary" onclick="addServerCard('DVBAPI')">+ Add OSCam (TCP)</button>
+                        <button type="button" class="btn btn-primary" style="background:#0284C7; border-color:#0284C7;" onclick="addServerCard('DVBAPI_UNIX')">+ Add DVBAPI (UNIX)</button>
+                        <button type="button" class="btn btn-purple" onclick="addServerCard('NEWCAMD')">+ Add Newcamd</button>
+                        <button type="button" class="btn btn-outline" style="border-color:#10B981; color:#34D399;" onclick="addServerCard('CS378X')">+ Add Camd35 (cs378x)</button>
+                        <button type="button" class="btn btn-outline" style="border-color:#F43F5E; color:#FB7185;" onclick="addServerCard('RADEGAST')">+ Add Radegast</button>
+                        <button type="button" class="btn btn-outline" style="border-color:#14B8A6; color:#2DD4BF;" onclick="addServerCard('OSCAM_WEBIF')">+ Add WebIF</button>
                     </div>
                 </div>
 
                 <!-- Provider Quick Templates Toolbar -->
                 <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:18px;">
-                    <div style="font-weight:700; font-size:13px; margin-bottom:8px; color:var(--text-main);">⚡ Fast Provider Templates (Click to add configured server profile):</div>
+                    <div style="font-weight:700; font-size:13px; margin-bottom:8px; color:var(--text-main);">⚡ Fast Provider Templates (Click to add preconfigured server profile):</div>
                     <div class="preset-container" style="margin:0;">
                         <span class="preset-badge badge-warning" onclick="addServerFromPreset('Movistar+ ES (CCcam)', '0x1810', 12000, 'CCCAM')">+ 🇪🇸 Movistar+ CCcam (0x1810)</span>
                         <span class="preset-badge badge-purple" onclick="addServerFromPreset('Movistar+ ES (Newcamd)', '0x1810', 10001, 'NEWCAMD')">+ 🇪🇸 Movistar+ (0x1810)</span>
                         <span class="preset-badge badge-warning" onclick="addServerFromPreset('HD+ Germany (CCcam)', '0x1830', 12000, 'CCCAM')">+ 🇩🇪 HD+ CCcam (0x1830)</span>
                         <span class="preset-badge badge-purple" onclick="addServerFromPreset('HD+ Germany (Newcamd)', '0x1830', 10002, 'NEWCAMD')">+ 🇩🇪 HD+ Astra (0x1830)</span>
+                        <span class="preset-badge" style="background:rgba(16,185,129,0.2); color:#6EE7B7; border:1px solid #10B981;" onclick="addServerFromPreset('HD+ Camd35', '0x1830', 13000, 'CS378X')">+ 🇩🇪 HD+ cs378x (0x1830)</span>
                         <span class="preset-badge" onclick="addServerFromPreset('Sky DE', '0x098C', 9000, 'DVBAPI')">+ 🇩🇪 Sky DE (0x098C)</span>
                         <span class="preset-badge" onclick="addServerFromPreset('Sky Italia', '0x09CD', 9000, 'DVBAPI')">+ 🇮🇹 Sky IT (0x09CD)</span>
                         <span class="preset-badge badge-purple" onclick="addServerFromPreset('Tivùsat IT', '0x183E', 10005, 'NEWCAMD')">+ 🇮🇹 Tivùsat (0x183E)</span>
@@ -1709,6 +1741,7 @@ class OscamLocalConfigWebServer(
                         <span class="preset-badge badge-purple" onclick="addServerFromPreset('SRG SSR Swiss', '0x0500', 10011, 'NEWCAMD')">+ 🇨🇭 SRG SSR (0x0500)</span>
                         <span class="preset-badge badge-purple" onclick="addServerFromPreset('ORF Austria', '0x0D95', 10012, 'NEWCAMD')">+ 🇦🇹 ORF Digital (0x0D95)</span>
                         <span class="preset-badge badge-purple" onclick="addServerFromPreset('D-Smart Turkey', '0x092B', 10013, 'NEWCAMD')">+ 🇹🇷 D-Smart (0x092B)</span>
+                        <span class="preset-badge" style="background:rgba(244,63,94,0.2); color:#FDA4AF; border:1px solid #F43F5E;" onclick="addServerFromPreset('Radegast Fast', '0x1810', 678, 'RADEGAST')">+ ⚡ Radegast (0x1810)</span>
                         <span class="preset-badge" onclick="addServerFromPreset('Vodafone Cable', '0x09C7', 9000, 'DVBAPI')">+ 🇩🇪 Vodafone Cable (0x09C7)</span>
                         <span class="preset-badge" onclick="addServerFromPreset('TDT Spain', '0x1801', 9000, 'DVBAPI')">+ 🇪🇸 TDT / Saorview (0x1801)</span>
                     </div>
@@ -2113,6 +2146,32 @@ class OscamLocalConfigWebServer(
                 .catch(function(e) { showAlert('Failed to load configuration: ' + e, 'error'); });
         }
 
+        function getProtocolBadgeStyle(proto) {
+            switch(proto) {
+                case 'CCCAM': return 'rgba(217,119,6,0.2); color:#FCD34D; border:1px solid #D97706;';
+                case 'NEWCAMD': return 'rgba(139,92,246,0.2); color:#C4B5FD; border:1px solid #8B5CF6;';
+                case 'DVBAPI': return 'rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6;';
+                case 'DVBAPI_UNIX': return 'rgba(2,132,199,0.2); color:#7DD3FC; border:1px solid #0284C7;';
+                case 'CS378X': return 'rgba(16,185,129,0.2); color:#6EE7B7; border:1px solid #10B981;';
+                case 'RADEGAST': return 'rgba(244,63,94,0.2); color:#FDA4AF; border:1px solid #F43F5E;';
+                case 'OSCAM_WEBIF': return 'rgba(20,184,166,0.2); color:#5EEAD4; border:1px solid #14B8A6;';
+                default: return 'rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6;';
+            }
+        }
+
+        function getDefaultPortForProto(proto) {
+            switch(proto) {
+                case 'CCCAM': return 12000;
+                case 'NEWCAMD': return 10000;
+                case 'CS378X': return 13000;
+                case 'RADEGAST': return 678;
+                case 'OSCAM_WEBIF': return 8888;
+                case 'DVBAPI': return 9000;
+                case 'DVBAPI_UNIX': return 0;
+                default: return 9000;
+            }
+        }
+
         function renderServerCards(servers) {
             var container = document.getElementById('server-list-box');
             container.innerHTML = '';
@@ -2121,30 +2180,43 @@ class OscamLocalConfigWebServer(
                 card.className = 'server-card';
                 card.id = 'srv-box-' + idx;
                 var proto = s.protocol || 'DVBAPI';
-                var isNewcamd = (proto === 'NEWCAMD');
-                var isCccam = (proto === 'CCCAM');
-                var badgeStyle = isCccam ? 'rgba(217,119,6,0.2); color:#FCD34D; border:1px solid #D97706' :
-                                 isNewcamd ? 'rgba(139,92,246,0.2); color:#C4B5FD; border:1px solid #8B5CF6' :
-                                 'rgba(59,130,246,0.2); color:#93C5FD; border:1px solid #3B82F6';
+                var badgeStyle = getProtocolBadgeStyle(proto);
+                var isEnabled = (s.enabled !== false);
+                var isPrimary = (s.is_primary === true) || (idx === 0 && !servers.some(function(x) { return x.is_primary; }));
+
                 card.innerHTML = 
-                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">' +
-                        '<div style="font-weight:700; font-size:14px; color:#FFF;">' + (s.name || 'Server Profile ' + (idx + 1)) + '</div>' +
-                        '<span class="srv-proto-badge" style="background:' + badgeStyle + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;">' + proto + '</span>' +
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">' +
+                        '<div style="display:flex; align-items:center; gap:10px;">' +
+                            '<div style="font-weight:700; font-size:15px; color:#FFF;">' + (s.name || 'Server Profile ' + (idx + 1)) + '</div>' +
+                            '<span class="srv-proto-badge" style="background:' + badgeStyle + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;">' + proto + '</span>' +
+                        '</div>' +
+                        '<div style="display:flex; align-items:center; gap:16px;">' +
+                            '<label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:700; cursor:pointer; color:#A7F3D0;">' +
+                                '<input type="checkbox" class="srv-enabled"' + (isEnabled ? ' checked' : '') + '> Active' +
+                            '</label>' +
+                            '<label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:700; cursor:pointer; color:#FDE68A;">' +
+                                '<input type="radio" name="srv_primary_radio" class="srv-primary"' + (isPrimary ? ' checked' : '') + '> Primary' +
+                            '</label>' +
+                        '</div>' +
                     '</div>' +
                     '<div class="server-fields">' +
                         '<div><label>Profile Name</label><input type="text" class="srv-name" value="' + (s.name || 'Server ' + (idx + 1)) + '"></div>' +
                         '<div><label>Protocol</label><select class="srv-proto" onchange="toggleServerFields(' + idx + ')">' +
                             '<option value="CCCAM"' + (proto === 'CCCAM' ? ' selected' : '') + '>CCcam 2.3.0</option>' +
-                            '<option value="DVBAPI"' + (proto === 'DVBAPI' ? ' selected' : '') + '>OSCam (dvbapi)</option>' +
+                            '<option value="DVBAPI"' + (proto === 'DVBAPI' ? ' selected' : '') + '>OSCam DVBAPI (TCP)</option>' +
+                            '<option value="DVBAPI_UNIX"' + (proto === 'DVBAPI_UNIX' ? ' selected' : '') + '>OSCam DVBAPI (UNIX Socket)</option>' +
+                            '<option value="CS378X"' + (proto === 'CS378X' ? ' selected' : '') + '>Camd35 / cs378x (TCP)</option>' +
+                            '<option value="RADEGAST"' + (proto === 'RADEGAST' ? ' selected' : '') + '>Radegast v3</option>' +
                             '<option value="NEWCAMD"' + (proto === 'NEWCAMD' ? ' selected' : '') + '>Newcamd v5.25</option>' +
+                            '<option value="OSCAM_WEBIF"' + (proto === 'OSCAM_WEBIF' ? ' selected' : '') + '>OSCam WebIF REST</option>' +
                         '</select></div>' +
-                        '<div><label>Host / IP Address</label><input type="text" class="srv-host" value="' + (s.host || '192.168.1.100') + '"></div>' +
-                        '<div><label>Port</label><input type="number" class="srv-port" value="' + (s.port || (isCccam ? 12000 : (isNewcamd ? 10000 : 9000))) + '"></div>' +
+                        '<div><label class="srv-host-label">Host / IP / Socket</label><input type="text" class="srv-host" value="' + (s.host || (proto === 'DVBAPI_UNIX' ? '/tmp/camd.socket' : '192.168.1.100')) + '"></div>' +
+                        '<div><label>Port</label><input type="number" class="srv-port" value="' + (s.port != null ? s.port : getDefaultPortForProto(proto)) + '"' + (proto === 'DVBAPI_UNIX' ? ' disabled' : '') + '></div>' +
                         '<div><label>Username</label><input type="text" class="srv-user" value="' + (s.user || 'android_tv') + '"></div>' +
                     '</div>' +
-                    '<div class="newcamd-extra-' + idx + '" style="margin-top:12px; display:' + (isNewcamd || isCccam ? 'grid' : 'none') + '; grid-template-columns: 1.5fr ' + (isNewcamd ? '2fr ' : '') + '1fr; gap:12px;">' +
-                        '<div><label>Password</label><input type="text" class="srv-pass" value="' + (s.password || 'android_tv') + '"></div>' +
-                        '<div class="srv-des-div-' + idx + '" style="display:' + (isNewcamd ? 'block' : 'none') + ';"><label>DES Key (14 bytes hex)</label><input type="text" class="srv-des" value="' + (s.des_key || '0102030405060708091011121314') + '"></div>' +
+                    '<div class="srv-creds-row-' + idx + '" style="margin-top:12px; display:grid; grid-template-columns: 1.5fr ' + (proto === 'NEWCAMD' ? '2fr ' : '') + '1fr; gap:12px;">' +
+                        '<div class="srv-pass-div-' + idx + '"><label>Password</label><input type="password" class="srv-pass" value="' + (s.password || 'android_tv') + '"></div>' +
+                        '<div class="srv-des-div-' + idx + '" style="display:' + (proto === 'NEWCAMD' ? 'block' : 'none') + ';"><label>DES Key (14 bytes hex)</label><input type="text" class="srv-des" value="' + (s.des_key || '0102030405060708091011121314') + '"></div>' +
                         '<div><label>Target CAID</label><input type="text" class="srv-caid" value="' + (s.caid || '0x1810') + '"></div>' +
                     '</div>' +
                     '<div style="margin-top:12px; display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; background:rgba(255,255,255,0.02); padding:10px 14px; border-radius:8px; border:1px solid rgba(255,255,255,0.05);">' +
@@ -2152,7 +2224,7 @@ class OscamLocalConfigWebServer(
                         '<div><label style="font-size:11px; color:#94A3B8;">Recv Timeout (s)</label><input type="number" class="srv-recv-timeout" value="' + (s.recv_timeout_sec || 8) + '"></div>' +
                         '<div><label style="font-size:11px; color:#94A3B8;">Reconnect Interval (ms)</label><input type="number" class="srv-recon-interval" value="' + (s.reconnect_interval_ms || 2000) + '"></div>' +
                     '</div>' +
-                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:10px;">' +
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:10px; flex-wrap:wrap; gap:8px;">' +
                         '<div class="hint" id="ping-status-' + idx + '" style="margin:0;">Ready</div>' +
                         '<div style="display:flex; gap:8px;">' +
                             '<button type="button" class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="pingServer(' + idx + ')">Ping Test</button>' +
@@ -2167,42 +2239,56 @@ class OscamLocalConfigWebServer(
             var card = document.getElementById('srv-box-' + idx);
             var proto = card.querySelector('.srv-proto').value;
             var portInput = card.querySelector('.srv-port');
-            var extra = card.querySelector('.newcamd-extra-' + idx);
+            var hostInput = card.querySelector('.srv-host');
+            var hostLabel = card.querySelector('.srv-host-label');
+            var credsRow = card.querySelector('.srv-creds-row-' + idx);
+            var passDiv = card.querySelector('.srv-pass-div-' + idx);
             var desDiv = card.querySelector('.srv-des-div-' + idx);
             var badgeEl = card.querySelector('.srv-proto-badge');
+
             if (badgeEl) {
                 badgeEl.innerText = proto;
-                badgeEl.style.background = (proto === 'CCCAM') ? 'rgba(217,119,6,0.2)' : (proto === 'NEWCAMD') ? 'rgba(139,92,246,0.2)' : 'rgba(59,130,246,0.2)';
-                badgeEl.style.color = (proto === 'CCCAM') ? '#FCD34D' : (proto === 'NEWCAMD') ? '#C4B5FD' : '#93C5FD';
-                badgeEl.style.border = (proto === 'CCCAM') ? '1px solid #D97706' : (proto === 'NEWCAMD') ? '1px solid #8B5CF6' : '1px solid #3B82F6';
+                badgeEl.style.cssText = 'background:' + getProtocolBadgeStyle(proto) + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;';
             }
-            if (proto === 'CCCAM') {
-                if (portInput.value === '9000' || portInput.value === '10000') portInput.value = '12000';
-                if (extra) {
-                    extra.style.display = 'grid';
-                    extra.style.gridTemplateColumns = '1.5fr 1fr';
-                }
+
+            if (proto === 'DVBAPI_UNIX') {
+                portInput.value = 0;
+                portInput.disabled = true;
+                if (hostInput.value === '192.168.1.100' || hostInput.value === '127.0.0.1') hostInput.value = '/tmp/camd.socket';
+                if (hostLabel) hostLabel.innerText = 'Socket Path';
+                if (passDiv) passDiv.style.display = 'none';
                 if (desDiv) desDiv.style.display = 'none';
-            } else if (proto === 'NEWCAMD') {
-                if (portInput.value === '9000' || portInput.value === '12000') portInput.value = '10000';
-                if (extra) {
-                    extra.style.display = 'grid';
-                    extra.style.gridTemplateColumns = '1.5fr 2fr 1fr';
-                }
-                if (desDiv) desDiv.style.display = 'block';
+                if (credsRow) credsRow.style.gridTemplateColumns = '1fr';
             } else {
-                if (portInput.value === '10000' || portInput.value === '12000') portInput.value = '9000';
-                if (extra) extra.style.display = 'none';
+                portInput.disabled = false;
+                if (hostLabel) hostLabel.innerText = 'Host / IP Address';
+                if (hostInput.value.indexOf('/') >= 0) hostInput.value = '192.168.1.100';
+                portInput.value = getDefaultPortForProto(proto);
+
+                if (proto === 'NEWCAMD') {
+                    if (passDiv) passDiv.style.display = 'block';
+                    if (desDiv) desDiv.style.display = 'block';
+                    if (credsRow) credsRow.style.gridTemplateColumns = '1.5fr 2fr 1fr';
+                } else if (proto === 'CCCAM' || proto === 'CS378X' || proto === 'OSCAM_WEBIF') {
+                    if (passDiv) passDiv.style.display = 'block';
+                    if (desDiv) desDiv.style.display = 'none';
+                    if (credsRow) credsRow.style.gridTemplateColumns = '1.5fr 1fr';
+                } else { // DVBAPI or RADEGAST
+                    if (passDiv) passDiv.style.display = 'none';
+                    if (desDiv) desDiv.style.display = 'none';
+                    if (credsRow) credsRow.style.gridTemplateColumns = '1fr';
+                }
             }
         }
 
         function addServerCard(proto) {
             proto = proto || 'CCCAM';
-            var defaultPort = (proto === 'CCCAM') ? 12000 : (proto === 'NEWCAMD' ? 10000 : 9000);
+            var defaultPort = getDefaultPortForProto(proto);
+            var defaultHost = (proto === 'DVBAPI_UNIX') ? '/tmp/camd.socket' : '192.168.1.100';
             var s = {
-                name: (proto === 'CCCAM' ? 'CCcam ' : proto === 'NEWCAMD' ? 'Newcamd ' : 'OSCam ') + (currentServers.length + 1),
+                name: (proto === 'CCCAM' ? 'CCcam ' : proto === 'NEWCAMD' ? 'Newcamd ' : proto === 'CS378X' ? 'Camd35 ' : proto === 'RADEGAST' ? 'Radegast ' : proto === 'OSCAM_WEBIF' ? 'WebIF ' : 'OSCam ') + (currentServers.length + 1),
                 protocol: proto,
-                host: '192.168.1.100',
+                host: defaultHost,
                 port: defaultPort,
                 user: 'android_tv',
                 password: 'android_tv',
@@ -2220,12 +2306,13 @@ class OscamLocalConfigWebServer(
 
         function addServerFromPreset(name, caid, port, proto) {
             proto = proto || 'CCCAM';
-            var defaultPort = (proto === 'CCCAM') ? 12000 : (proto === 'NEWCAMD' ? 10000 : 9000);
+            var defaultPort = port || getDefaultPortForProto(proto);
+            var defaultHost = (proto === 'DVBAPI_UNIX') ? '/tmp/camd.socket' : '192.168.1.100';
             var s = {
                 name: name,
                 protocol: proto,
-                host: '192.168.1.100',
-                port: port || defaultPort,
+                host: defaultHost,
+                port: defaultPort,
                 user: 'android_tv',
                 password: 'android_tv',
                 des_key: '0102030405060708091011121314',
@@ -2238,7 +2325,7 @@ class OscamLocalConfigWebServer(
             };
             currentServers.push(s);
             renderServerCards(currentServers);
-            showAlert('✓ Added server profile for ' + name + ' (' + proto + ' Port ' + (port || defaultPort) + ', CAID ' + caid + ')', 'success');
+            showAlert('✓ Added server profile for ' + name + ' (' + proto + ' Port ' + defaultPort + ', CAID ' + caid + ')', 'success');
         }
 
         function removeServerCard(idx) {
@@ -2251,25 +2338,29 @@ class OscamLocalConfigWebServer(
             var host = card.querySelector('.srv-host').value;
             var port = parseInt(card.querySelector('.srv-port').value, 10) || 9000;
             var proto = card.querySelector('.srv-proto').value;
+            var user = card.querySelector('.srv-user') ? card.querySelector('.srv-user').value : '';
+            var pass = card.querySelector('.srv-pass') ? card.querySelector('.srv-pass').value : '';
+            var des = card.querySelector('.srv-des') ? card.querySelector('.srv-des').value : '';
             var statusDiv = document.getElementById('ping-status-' + idx);
 
             statusDiv.style.color = 'var(--warning)';
-            statusDiv.innerText = 'Pinging ' + proto + ' ' + host + ':' + port + '...';
+            statusDiv.innerText = 'Testing ' + proto + ' connection to ' + host + (proto === 'DVBAPI_UNIX' ? '' : ':' + port) + '...';
 
             fetch('/api/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ host: host, port: port, protocol: proto })
+                body: JSON.stringify({ host: host, port: port, protocol: proto, user: user, password: pass, des_key: des })
             })
             .then(function(r) { return r.json(); })
             .then(function(res) {
                 if (res.success) {
                     statusDiv.style.color = 'var(--success)';
-                    statusDiv.innerText = '✓ Reachable (' + proto + ' Latency: ' + res.latency_ms + ' ms)';
+                    var detailMsg = res.detail ? ' [' + res.detail + ']' : '';
+                    statusDiv.innerText = '✓ Reachable (' + proto + ' Latency: ' + res.latency_ms + ' ms)' + detailMsg;
                     updateLatencySparkline(res.latency_ms);
                 } else {
                     statusDiv.style.color = 'var(--danger)';
-                    statusDiv.innerText = '✗ Connection failed: ' + (res.error || 'Connection refused');
+                    statusDiv.innerText = '✗ Failed: ' + (res.error || res.detail || 'Connection refused');
                 }
             })
             .catch(function(e) {
@@ -2412,22 +2503,24 @@ class OscamLocalConfigWebServer(
                 var reconIntervalEl = card.querySelector('.srv-recon-interval');
 
                 var protoVal = protoEl ? protoEl.value : 'DVBAPI';
-                var defaultPort = (protoVal === 'CCCAM') ? 12000 : (protoVal === 'NEWCAMD' ? 10000 : 9000);
+                var defaultPort = getDefaultPortForProto(protoVal);
+                var enabledEl = card.querySelector('.srv-enabled');
+                var primaryEl = card.querySelector('.srv-primary');
 
                 servers.push({
                     name: card.querySelector('.srv-name').value,
                     protocol: protoVal,
                     host: card.querySelector('.srv-host').value,
-                    port: parseInt(card.querySelector('.srv-port').value, 10) || defaultPort,
-                    user: card.querySelector('.srv-user').value,
+                    port: (protoVal === 'DVBAPI_UNIX') ? 0 : (parseInt(card.querySelector('.srv-port').value, 10) || defaultPort),
+                    user: card.querySelector('.srv-user') ? card.querySelector('.srv-user').value : 'android_tv',
                     password: passEl ? passEl.value : 'android_tv',
                     des_key: desEl ? desEl.value : '0102030405060708091011121314',
                     caid: caidEl ? caidEl.value : '0x1810',
                     connect_timeout_sec: connTimeoutEl ? (parseInt(connTimeoutEl.value, 10) || 4) : 4,
                     recv_timeout_sec: recvTimeoutEl ? (parseInt(recvTimeoutEl.value, 10) || 8) : 8,
                     reconnect_interval_ms: reconIntervalEl ? (parseInt(reconIntervalEl.value, 10) || 2000) : 2000,
-                    enabled: true,
-                    is_primary: (idx === 0)
+                    enabled: enabledEl ? enabledEl.checked : true,
+                    is_primary: primaryEl ? primaryEl.checked : (idx === 0)
                 });
             });
 

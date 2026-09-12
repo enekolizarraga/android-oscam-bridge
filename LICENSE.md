@@ -1,6 +1,6 @@
 # Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
 
-**Copyright (c) 2024-2026 lizarragaeus / android-oscam-bridge (`com.lizarragaeus.oscambridge`). All rights reserved.**
+**Copyright (c) 2024-2026 Eneko Lizarraga / android-oscam-bridge (`com.lizarragaeus.oscambridge`). All rights reserved.**
 
 ---
 
