@@ -117,6 +117,9 @@ class OscamLocalConfigWebServer(
                 createContext("/lamedb", LamedbExportHandler())
                 createContext("/api/channels/scan", ApiChannelsScanHandler())
                 createContext("/api/channels/import", ApiChannelsImportHandler())
+                createContext("/api/channels/cached", ApiChannelsCachedHandler())
+                createContext("/api/channels/available", ApiChannelsAvailableHandler())
+                createContext("/api/cache/test_ecm", ApiCacheTestEcmHandler())
 
                 executor = null
                 start()
@@ -527,6 +530,7 @@ class OscamLocalConfigWebServer(
 
                         val channelsArray = JSONArray()
                         config.channels.forEach { ch ->
+                            val cas = CasSystemDetector.detect(ch.caid)
                             channelsArray.put(JSONObject().apply {
                                 put("id", ch.id)
                                 put("name", ch.name)
@@ -537,6 +541,11 @@ class OscamLocalConfigWebServer(
                                 put("serviceId", ch.serviceId)
                                 put("pmtPid", ch.pmtPid)
                                 put("caid", "0x%04X".format(ch.caid))
+                                put("caid_int", ch.caid)
+                                put("cas_system", cas.systemName)
+                                put("cas_code", cas.shortCode)
+                                put("cas_color", cas.badgeColor)
+                                put("cas_desc", cas.description)
                                 put("streamUrl", ch.streamUrl)
                             })
                         }
@@ -1341,7 +1350,7 @@ class OscamLocalConfigWebServer(
     )
 
     private val satellitePresetsDatabase = listOf(
-        // Astra 19.2°E - Movistar+ (Encrypted CAID 0x1810)
+        // Astra 19.2°E - Movistar+ (Encrypted CAID 0x1810 - Nagravision)
         PresetChannelDefinition("Movistar LaLiga HD", "Astra 19.2°E", 10817, "V", 22000, 29950, 1030, 0x1810, true),
         PresetChannelDefinition("Movistar Liga de Campeones HD", "Astra 19.2°E", 10729, "V", 22000, 30001, 1024, 0x1810, true),
         PresetChannelDefinition("Movistar Plus+ HD", "Astra 19.2°E", 10758, "V", 22000, 30050, 1025, 0x1810, true),
@@ -1359,30 +1368,56 @@ class OscamLocalConfigWebServer(
         PresetChannelDefinition("Calle 13 HD", "Astra 19.2°E", 10817, "V", 22000, 29955, 1040, 0x1810, true),
         PresetChannelDefinition("Syfy HD", "Astra 19.2°E", 10817, "V", 22000, 29956, 1041, 0x1810, true),
         PresetChannelDefinition("Cosmo HD", "Astra 19.2°E", 11258, "V", 22000, 30915, 1042, 0x1810, true),
-        // Astra 19.2°E - HD+ Germany (Encrypted CAID 0x1830)
+        // Astra 19.2°E - HD+ Germany (Encrypted CAID 0x1830 - Nagravision)
         PresetChannelDefinition("HD+ RTL UHD", "Astra 19.2°E", 11214, "H", 22000, 13410, 1025, 0x1830, true),
         PresetChannelDefinition("HD+ ProSieben HD", "Astra 19.2°E", 11464, "H", 22000, 61301, 102, 0x1830, true),
         PresetChannelDefinition("HD+ Sat.1 HD", "Astra 19.2°E", 11464, "H", 22000, 61300, 101, 0x1830, true),
-        // Astra 19.2°E - Sky Deutschland (Encrypted CAID 0x098C)
+        PresetChannelDefinition("HD+ VOX HD", "Astra 19.2°E", 10832, "H", 22000, 61200, 100, 0x1830, true),
+        // Astra 19.2°E - Sky Deutschland (Encrypted CAID 0x098C - NDS VideoGuard)
         PresetChannelDefinition("Sky Sport Bundesliga 1 HD", "Astra 19.2°E", 11720, "H", 27500, 105, 96, 0x098C, true),
         PresetChannelDefinition("Sky Cinema Premiere HD", "Astra 19.2°E", 11758, "H", 27500, 107, 98, 0x098C, true),
+        PresetChannelDefinition("Sky Krimi HD", "Astra 19.2°E", 11720, "H", 27500, 110, 99, 0x098C, true),
+        // Astra 19.2°E - Canal+ France (Encrypted CAID 0x0100 - Seca / Mediaguard)
+        PresetChannelDefinition("Canal+ France HD", "Astra 19.2°E", 12012, "V", 29700, 8801, 110, 0x0100, true),
+        PresetChannelDefinition("Canal+ Sport France HD", "Astra 19.2°E", 11856, "V", 29700, 8201, 120, 0x0100, true),
+        // Astra 19.2°E - ORF Digital Austria (Encrypted CAID 0x0D95 - Cryptoworks)
+        PresetChannelDefinition("ORF 1 HD", "Astra 19.2°E", 11303, "H", 22000, 4911, 1920, 0x0D95, true),
+        PresetChannelDefinition("ORF 2 HD", "Astra 19.2°E", 11303, "H", 22000, 4912, 1921, 0x0D95, true),
         // Astra 19.2°E - Free-to-Air (FTA CAID 0x0000)
         PresetChannelDefinition("Canal 24 Horas HD", "Astra 19.2°E", 11376, "V", 22000, 30010, 1050, 0, false),
         PresetChannelDefinition("TVE Internacional HD", "Astra 19.2°E", 11376, "V", 22000, 30011, 1051, 0, false),
         PresetChannelDefinition("Telesur HD", "Astra 19.2°E", 11376, "V", 22000, 30012, 1052, 0, false),
         PresetChannelDefinition("ZDF HD", "Astra 19.2°E", 11362, "H", 22000, 11110, 6100, 0, false),
         PresetChannelDefinition("Das Erste HD", "Astra 19.2°E", 11494, "H", 22000, 10301, 5100, 0, false),
-        // Hispasat 30°W - MEO / NOS (Encrypted CAID 0x1802)
+        // Hispasat 30°W - MEO / NOS (Encrypted CAID 0x1802 - Nagravision)
         PresetChannelDefinition("Sport TV 1 HD", "Hispasat 30°W", 12246, "H", 27500, 401, 4010, 0x1802, true),
         PresetChannelDefinition("Sport TV 2 HD", "Hispasat 30°W", 12246, "H", 27500, 402, 4020, 0x1802, true),
         PresetChannelDefinition("Canal Hollywood PT", "Hispasat 30°W", 12246, "H", 27500, 404, 4040, 0x1802, true),
+        PresetChannelDefinition("TVCine Top HD", "Hispasat 30°W", 12246, "H", 27500, 406, 4060, 0x1802, true),
+        PresetChannelDefinition("SIC Noticias", "Hispasat 30°W", 12168, "H", 27500, 408, 4080, 0x1802, true),
         PresetChannelDefinition("TVI Internacional", "Hispasat 30°W", 12168, "H", 27500, 405, 4050, 0, false),
-        // Hotbird 13°E - Tivùsat / Polsat / SRG (Encrypted)
+        PresetChannelDefinition("RTP 1", "Hispasat 30°W", 12130, "H", 27500, 410, 4100, 0, false),
+        // Hotbird 13°E - Tivùsat (Encrypted CAID 0x183E - Nagravision)
         PresetChannelDefinition("Rai 4K", "Hotbird 13°E", 11075, "V", 30000, 1, 100, 0x183E, true),
+        PresetChannelDefinition("Canale 5 HD", "Hotbird 13°E", 11432, "V", 29900, 105, 150, 0x183E, true),
+        PresetChannelDefinition("Italia 1 HD", "Hotbird 13°E", 11432, "V", 29900, 106, 151, 0x183E, true),
+        // Hotbird 13°E - Sky Italia (Encrypted CAID 0x09CD - NDS VideoGuard)
         PresetChannelDefinition("Sky Sport Uno HD", "Hotbird 13°E", 11958, "V", 27500, 10901, 160, 0x09CD, true),
+        PresetChannelDefinition("Sky Cinema Uno HD", "Hotbird 13°E", 11958, "V", 27500, 10902, 161, 0x09CD, true),
+        // Hotbird 13°E - SRG SSR Switzerland (Encrypted CAID 0x0500 - Viaccess)
         PresetChannelDefinition("SRF 1 HD", "Hotbird 13°E", 10971, "H", 29700, 2, 101, 0x0500, true),
+        PresetChannelDefinition("RTS Un HD", "Hotbird 13°E", 10971, "H", 29700, 3, 102, 0x0500, true),
+        // Hotbird 13°E - Polsat Box (Encrypted CAID 0x1803 - Nagravision)
         PresetChannelDefinition("Polsat Sport HD", "Hotbird 13°E", 12265, "V", 27500, 3101, 301, 0x1803, true),
-        PresetChannelDefinition("Rai News 24", "Hotbird 13°E", 10992, "V", 27500, 8502, 802, 0, false)
+        // Hotbird 13°E - Nova Greece (Encrypted CAID 0x0604 - Irdeto)
+        PresetChannelDefinition("Nova Sports 1 HD", "Hotbird 13°E", 11823, "H", 27500, 318, 3180, 0x0604, true),
+        PresetChannelDefinition("Rai News 24", "Hotbird 13°E", 10992, "V", 27500, 8502, 802, 0, false),
+        // Thor 0.8°W - Canal Digital Nordic (Encrypted CAID 0x0B00 - Conax)
+        PresetChannelDefinition("SVT 1 HD", "Thor 0.8°W", 10903, "V", 25000, 1010, 101, 0x0B00, true),
+        PresetChannelDefinition("TV 2 Norge HD", "Thor 0.8°W", 10903, "V", 25000, 1012, 103, 0x0B00, true),
+        // Eutelsat 5°W - Fransat (Encrypted CAID 0x0500 - Viaccess)
+        PresetChannelDefinition("TF1 HD (Fransat)", "Eutelsat 5°W", 11096, "V", 29950, 401, 410, 0x0500, true),
+        PresetChannelDefinition("France 2 HD (Fransat)", "Eutelsat 5°W", 11096, "V", 29950, 402, 420, 0x0500, true)
     )
 
     private inner class ApiChannelsScanHandler : HttpHandler {
@@ -1461,6 +1496,13 @@ class OscamLocalConfigWebServer(
                     if (source == "all" || source == "hotbird") {
                         rawChannels.addAll(satellitePresetsDatabase.filter { it.satellite.startsWith("Hotbird", true) })
                     }
+                    if (source == "all" || source == "other") {
+                        rawChannels.addAll(satellitePresetsDatabase.filter { 
+                            !it.satellite.startsWith("Astra", true) && 
+                            !it.satellite.startsWith("Hispasat", true) && 
+                            !it.satellite.startsWith("Hotbird", true) 
+                        })
+                    }
 
                     // Deduplicate
                     val seenKeys = mutableSetOf<String>()
@@ -1507,6 +1549,7 @@ class OscamLocalConfigWebServer(
                         var isValidated = false
                         var validatedServer = ""
                         var statusText: String
+                        val cas = CasSystemDetector.detect(ch.caid)
 
                         if (!ch.isEncrypted) {
                             ftaCount++
@@ -1515,7 +1558,7 @@ class OscamLocalConfigWebServer(
                         } else {
                             scrambledCount++
                             if (!validateServers) {
-                                statusText = "🔒 Encriptado (CAID 0x%04X)".format(ch.caid)
+                                statusText = "🔒 [${cas.shortCode}] Encriptado (0x%04X)".format(ch.caid)
                             } else {
                                 val srv = activeServers.firstOrNull { it.caid == ch.caid }
                                     ?: activeServers.firstOrNull { currentConfig.caids.contains(ch.caid) }
@@ -1528,12 +1571,12 @@ class OscamLocalConfigWebServer(
                                         isValidated = true
                                         validatedCount++
                                         validatedServer = srv.name
-                                        statusText = "🟢 Validado con '${srv.name}' [${srv.protocol.name}] (0x%04X)".format(ch.caid)
+                                        statusText = "🟢 [${cas.shortCode}] Validado con '${srv.name}' [${srv.protocol.name}] (0x%04X)".format(ch.caid)
                                     } else {
-                                        statusText = "🟡 Encriptado (Servidor '${srv.name}' asignado pero no responde)".format(ch.caid)
+                                        statusText = "🟡 [${cas.shortCode}] Encriptado (Servidor '${srv.name}' no responde)".format(ch.caid)
                                     }
                                 } else {
-                                    statusText = "🟡 Encriptado (Sin servidor configurado para CAID 0x%04X)".format(ch.caid)
+                                    statusText = "🟡 [${cas.shortCode}] Encriptado (Sin servidor configurado para 0x%04X)".format(ch.caid)
                                 }
                             }
                         }
@@ -1548,6 +1591,10 @@ class OscamLocalConfigWebServer(
                             put("pmtPid", ch.pmtPid)
                             put("caid", "0x%04X".format(ch.caid))
                             put("caid_int", ch.caid)
+                            put("cas_system", cas.systemName)
+                            put("cas_code", cas.shortCode)
+                            put("cas_color", cas.badgeColor)
+                            put("cas_desc", cas.description)
                             put("is_encrypted", ch.isEncrypted)
                             put("is_validated", isValidated)
                             put("validated_server", validatedServer)
@@ -1634,6 +1681,143 @@ class OscamLocalConfigWebServer(
                 } catch (e: Exception) {
                     appendLog("ERROR importing channels: ${e.message}")
                     sendErrorResponse(exchange, 500, "Import failed: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private inner class ApiChannelsCachedHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val config = repository.getCurrentConfig()
+                    val totalCachedCws = OscamTvInputBridge.cwCache.size
+                    val hits = OscamTvInputBridge.cacheHits.get()
+                    val misses = OscamTvInputBridge.cacheMisses.get()
+                    val total = hits + misses
+                    val hitRatio = if (total > 0) "%.1f%%".format(hits.toDouble() * 100.0 / total) else "0.0%"
+
+                    val liveList = OscamTvInputBridge.getLiveChannelsList()
+                    val channelsArray = JSONArray()
+
+                    val now = System.currentTimeMillis()
+                    liveList.forEach { act ->
+                        val secAgo = ((now - act.lastEcmTimestamp) / 1000).coerceAtLeast(0)
+                        val cas = CasSystemDetector.detect(act.caid)
+                        channelsArray.put(JSONObject().apply {
+                            put("serviceId", act.serviceId)
+                            put("name", act.channelName)
+                            put("pmtPid", act.pmtPid)
+                            put("caid", "0x%04X".format(act.caid))
+                            put("caid_int", act.caid)
+                            put("cas_system", cas.systemName)
+                            put("cas_code", cas.shortCode)
+                            put("cas_color", cas.badgeColor)
+                            put("cas_desc", cas.description)
+                            put("ecm_requests", act.ecmCount)
+                            put("cw_hits", act.hitCount)
+                            put("last_seen_sec_ago", secAgo)
+                            put("last_parity", act.lastParity)
+                            put("last_cw", if (act.lastCwHex.isNotEmpty()) act.lastCwHex else "En espera de ECM")
+                            put("status", if (secAgo < 30) "ACTIVE_DESCRAMBLING" else "CACHED_IDLE")
+                        })
+                    }
+
+                    val resObj = JSONObject().apply {
+                        put("success", true)
+                        put("cache_enabled", config.cwCacheEnabled)
+                        put("total_cached_cws", totalCachedCws)
+                        put("cache_hits", hits)
+                        put("cache_misses", misses)
+                        put("hit_ratio", hitRatio)
+                        put("channels", channelsArray)
+                    }
+                    sendJsonResponse(exchange, 200, resObj.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "Error getting cached channels")
+                }
+            }
+        }
+    }
+
+    private inner class ApiChannelsAvailableHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val config = repository.getCurrentConfig()
+                    val configuredSids = config.channels.map { it.serviceId }.toSet()
+
+                    val listArray = JSONArray()
+                    satellitePresetsDatabase.forEach { p ->
+                        val cas = CasSystemDetector.detect(p.caid)
+                        val isConfigured = configuredSids.contains(p.serviceId)
+                        listArray.put(JSONObject().apply {
+                            put("name", p.name)
+                            put("satellite", p.satellite)
+                            put("frequency", p.frequency)
+                            put("polarization", p.polarization)
+                            put("symbolRate", p.symbolRate)
+                            put("serviceId", p.serviceId)
+                            put("pmtPid", p.pmtPid)
+                            put("caid", "0x%04X".format(p.caid))
+                            put("caid_int", p.caid)
+                            put("cas_system", cas.systemName)
+                            put("cas_code", cas.shortCode)
+                            put("cas_color", cas.badgeColor)
+                            put("cas_desc", cas.description)
+                            put("is_encrypted", p.isEncrypted)
+                            put("is_configured", isConfigured)
+                        })
+                    }
+
+                    val resObj = JSONObject().apply {
+                        put("success", true)
+                        put("total", satellitePresetsDatabase.size)
+                        put("channels", listArray)
+                    }
+                    sendJsonResponse(exchange, 200, resObj.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "Error getting available channels")
+                }
+            }
+        }
+    }
+
+    private inner class ApiCacheTestEcmHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val body = if (exchange.requestMethod.equals("POST", true)) {
+                        exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
+                    } else ""
+                    val json = if (body.isNotBlank()) JSONObject(body) else JSONObject()
+                    val sid = json.optInt("serviceId", 29950)
+                    val caidStr = json.optString("caid", "0x1810")
+                    val caid = if (caidStr.startsWith("0x", true)) caidStr.substring(2).toInt(16) else caidStr.toIntOrNull() ?: 0x1810
+                    val name = json.optString("name", "Test Channel")
+
+                    val fakeEcm = ByteArray(128) { (it and 0xFF).toByte() }
+                    fakeEcm[0] = 0x80.toByte()
+                    val fakeCw = byteArrayOf(
+                        0x12, 0x34, 0x56, 0x9C.toByte(), 0x78, 0x9A.toByte(), 0xBC.toByte(), 0xD2.toByte(),
+                        0xDE.toByte(), 0xF0.toByte(), 0x12, 0xE0.toByte(), 0x34, 0x56, 0x78, 0x02
+                    )
+
+                    OscamTvInputBridge.recordTunedChannel(sid, name, 1024, caid)
+                    val bridge = OscamTvInputBridge(context)
+                    bridge.recordResolvedCw(fakeEcm, fakeCw, parity = 0)
+
+                    appendLog("Simulated ECM resolved for '$name' (SID $sid, CAID 0x%04X). CW stored in memory cache.".format(caid))
+
+                    val res = JSONObject().apply {
+                        put("success", true)
+                        put("message", "CW de prueba simulado e inyectado en memoria para '$name' (CAID 0x%04X)".format(caid))
+                        put("cw", "12 34 56 9C 78 9A BC D2")
+                        put("parity", "EVEN (0)")
+                    }
+                    sendJsonResponse(exchange, 200, res.toString())
+                } catch (e: Exception) {
+                    sendErrorResponse(exchange, 500, e.message ?: "Error simulating ECM")
                 }
             }
         }
@@ -2489,103 +2673,260 @@ class OscamLocalConfigWebServer(
             <div class="panel">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">Satellite &amp; DVB Channel Database</div>
-                        <div class="panel-desc">Manage satellite transponders, service IDs, and stream mappings for external and native players.</div>
+                        <div class="panel-title">🛰️ Satellite &amp; DVB Channel Database &amp; CAS Encryption Monitor</div>
+                        <div class="panel-desc">Gestor de canales de satélite, detección de sistemas de encriptación CAS (Nagravision, Viaccess, NDS, Conax, Seca, Irdeto, Cryptoworks), caché CW en vivo y sintonizador de TV.</div>
                     </div>
                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                        <button type="button" class="btn btn-primary" onclick="toggleChannelScanner()">🔍 Rebuscar Canales (Scan &amp; Validar)</button>
                         <button type="button" class="btn btn-outline" onclick="addChannelRow()">+ Add Channel</button>
                         <a href="/playlist.m3u" class="btn btn-purple" download="channels.m3u">⬇ Export M3U</a>
                         <a href="/lamedb" class="btn btn-outline" download="lamedb">⬇ Export Enigma2 lamedb</a>
                     </div>
                 </div>
 
-                <!-- Channel Scanner & Server Validator Box -->
-                <div id="channel-scanner-box" style="display:none; margin-top:16px; background:var(--bg-card); border:1px solid var(--primary); border-radius:10px; padding:16px;">
-                    <div style="font-weight:700; font-size:15px; color:#FFF; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
-                        <span>📡 Escáner de Canales y Validador con Servidores</span>
-                        <button type="button" class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="toggleChannelScanner()">Cerrar</button>
-                    </div>
-                    <div class="hint" style="margin-bottom:14px;">
-                        Permite rebuscar canales desde el sintonizador de Android TV (TvContract) o transpondedores satelitales, buscando canales <strong>encriptados/codificados (Scrambled)</strong> y validándolos en tiempo real con los servidores OSCam/CCcam/Newcamd configurados.
-                    </div>
+                <!-- Subtab Navigation -->
+                <div style="display:flex; gap:10px; margin-bottom:18px; border-bottom:1px solid var(--border); padding-bottom:12px; flex-wrap:wrap;">
+                    <button type="button" class="btn btn-primary ch-subtab-btn" id="subtab-btn-cfg" onclick="switchChannelSubtab('cfg')">
+                        📺 Canales Configurados (<span id="count-cfg-channels">0</span>)
+                    </button>
+                    <button type="button" class="btn btn-outline ch-subtab-btn" id="subtab-btn-cached" onclick="switchChannelSubtab('cached')">
+                        ⚡ Canales Cacheados (CW Cache en Vivo)
+                    </button>
+                    <button type="button" class="btn btn-outline ch-subtab-btn" id="subtab-btn-avail" onclick="switchChannelSubtab('avail')">
+                        🛰️ Catálogo Satélite Disponible (<span id="count-avail-channels">0</span>)
+                    </button>
+                    <button type="button" class="btn btn-outline ch-subtab-btn" id="subtab-btn-scan" onclick="switchChannelSubtab('scan')">
+                        🔍 Rebuscar Canales (Scan TV Tuner &amp; Validar)
+                    </button>
+                </div>
 
-                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:14px; align-items:flex-end;">
-                        <div>
-                            <label for="scan-source-select" style="font-size:12px; font-weight:600; color:var(--text-muted); display:block; margin-bottom:4px;">Fuente de Búsqueda:</label>
-                            <select id="scan-source-select" style="width:100%; padding:8px; background:var(--bg-dark); border:1px solid var(--border); color:#FFF; border-radius:6px;">
-                                <option value="all">Todas las fuentes (Sintonizador TV + Transpondedores)</option>
-                                <option value="tv">📺 Sintonizador Android TV (TvContract / Live TV)</option>
-                                <option value="astra">🛰️ Astra 19.2°E (Movistar+, HD+, Sky DE)</option>
-                                <option value="hispasat">🛰️ Hispasat 30°W (MEO, NOS, Movistar)</option>
-                                <option value="hotbird">🛰️ Hotbird 13°E (Tivùsat, Polsat, SRG)</option>
-                            </select>
+                <!-- SUBSECTION 1: Canales Configurados -->
+                <div id="channel-subview-cfg">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
+                        <div style="font-size:13px; color:var(--text-muted);">
+                            Canales activos en tu televisor. El sistema CAS (Nagravision, Viaccess, etc.) se detecta automáticamente en tiempo real al escribir el CAID.
                         </div>
-                        <div style="display:flex; flex-direction:column; gap:8px;">
-                            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
-                                <input type="checkbox" id="scan-include-encrypted" checked style="accent-color:var(--primary); width:16px; height:16px;">
-                                <span>🔒 <strong>Buscar canales encriptados</strong> (Scrambled / CAS)</span>
-                            </label>
-                            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
-                                <input type="checkbox" id="scan-validate-servers" checked style="accent-color:var(--success); width:16px; height:16px;">
-                                <span>⚡ <strong>Validar con los servidores</strong> configurados</span>
-                            </label>
-                        </div>
-                        <div>
-                            <button type="button" id="btn-run-scan" class="btn btn-primary" style="width:100%; padding:10px;" onclick="runChannelScan()">
-                                ▶ Iniciar Búsqueda y Validación
-                            </button>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <input type="text" id="filter-cfg-search" placeholder="Filtrar configurados..." oninput="filterConfiguredChannelsTable()" style="padding:6px 10px; font-size:12px; width:180px;">
+                            <button type="button" class="btn btn-outline" style="padding:6px 12px; font-size:12px;" onclick="addChannelRow()">+ Añadir Canal</button>
+                            <button type="button" class="btn btn-success" style="padding:6px 14px; font-size:12px;" onclick="saveConfiguration()">💾 Guardar Canales</button>
                         </div>
                     </div>
 
-                    <!-- Scan Results Container -->
-                    <div id="scan-results-container" style="display:none; margin-top:14px;">
-                        <div id="scan-summary-bar" style="background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:6px; padding:8px 12px; font-size:13px; margin-bottom:10px; color:#93C5FD; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                            <span id="scan-stats-text">Cargando resultados...</span>
-                            <div style="display:flex; gap:8px;">
-                                <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="toggleSelectAllScanned(true)">Seleccionar Todos</button>
-                                <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="toggleSelectAllScanned(false)">Deseleccionar</button>
-                                <button type="button" class="btn btn-success" style="padding:4px 12px; font-size:11px;" onclick="importSelectedScannedChannels()">📥 Importar Seleccionados a la Base de Datos</button>
+                    <div class="table-container" style="max-height:460px; overflow-y:auto;">
+                        <table id="channels-table">
+                            <thead>
+                                <tr>
+                                    <th>Canal (Nombre)</th>
+                                    <th>Satélite</th>
+                                    <th>Frec / Pol / SR</th>
+                                    <th>SID / PMT</th>
+                                    <th>CAID</th>
+                                    <th>Sistema CAS Detectado</th>
+                                    <th>Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="channels-tbody"></tbody>
+                        </table>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px; flex-wrap:wrap; gap:10px;">
+                        <div style="font-size:12px; color:var(--text-muted);">
+                            💡 Modificar cualquier campo o CAID se reflejará directamente en la base de datos y en el descifrador de la TV.
+                        </div>
+                        <button type="button" class="btn btn-success" onclick="saveConfiguration()">Save Channel Database</button>
+                    </div>
+                </div>
+
+                <!-- SUBSECTION 2: Canales Cacheados (CW Cache en Vivo) -->
+                <div id="channel-subview-cached" style="display:none;">
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-bottom:18px;">
+                        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:14px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">CW CACHE STATUS</div>
+                            <div id="stat-cw-status" style="font-size:18px; font-weight:800; color:#10B981; margin-top:4px;">ACTIVO</div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Memoria RAM inmediata</div>
+                        </div>
+                        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:14px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">CONTROL WORDS EN MEMORIA</div>
+                            <div id="stat-cw-count" style="font-size:18px; font-weight:800; color:#38BDF8; margin-top:4px;">0</div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Claves CW listas</div>
+                        </div>
+                        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:14px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">CACHE HITS (Aciertos)</div>
+                            <div id="stat-cw-hits" style="font-size:18px; font-weight:800; color:#34D399; margin-top:4px;">0</div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Sin latencia de red</div>
+                        </div>
+                        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:14px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">CACHE MISSES</div>
+                            <div id="stat-cw-misses" style="font-size:18px; font-weight:800; color:#FBBF24; margin-top:4px;">0</div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Resueltas vía socket</div>
+                        </div>
+                        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:14px;">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700;">TASA DE ACIERTO (HIT RATIO)</div>
+                            <div id="stat-cw-ratio" style="font-size:18px; font-weight:800; color:#A78BFA; margin-top:4px;">0.0%</div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Eficiencia de descifrado</div>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                        <div style="font-weight:700; color:#FFF; font-size:14px;">
+                            Canales Descifrados y en Memoria (Live CW Cache Sessions):
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:12px;" onclick="loadCachedChannels()">🔄 Refrescar</button>
+                            <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:12px;" onclick="testSimulatedEcm()">⚡ Simular ECM de Prueba</button>
+                            <button type="button" class="btn btn-danger" style="padding:4px 10px; font-size:12px;" onclick="flushCwCache()">🧹 Vaciar CW Cache</button>
+                        </div>
+                    </div>
+
+                    <div class="table-container" style="max-height:360px; overflow-y:auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Canal</th>
+                                    <th>SID / PMT</th>
+                                    <th>CAID</th>
+                                    <th>Sistema CAS</th>
+                                    <th>Peticiones ECM</th>
+                                    <th>CW Hits</th>
+                                    <th>Última CW Descifrada</th>
+                                    <th>Paridad</th>
+                                    <th>Última Actividad</th>
+                                    <th>Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="cached-channels-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- SUBSECTION 3: Catálogo Satélite Disponible -->
+                <div id="channel-subview-avail" style="display:none;">
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:14px; margin-bottom:16px;">
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px; align-items:flex-end;">
+                            <div>
+                                <label style="font-size:12px; color:var(--text-muted); font-weight:600; display:block; margin-bottom:4px;">Filtrar por Satélite:</label>
+                                <select id="avail-sat-filter" onchange="filterAvailableChannels()" style="width:100%; padding:8px; background:var(--bg-dark); border:1px solid var(--border); color:#FFF; border-radius:6px;">
+                                    <option value="all">Todos los satélites</option>
+                                    <option value="Astra">Astra 19.2°E (Movistar+, HD+, Sky DE, Canal+ FR)</option>
+                                    <option value="Hispasat">Hispasat 30°W (MEO, NOS, Movistar)</option>
+                                    <option value="Hotbird">Hotbird 13°E (Tivùsat, Polsat, SRG, Nova)</option>
+                                    <option value="Thor">Thor 0.8°W (Canal Digital Nordic)</option>
+                                    <option value="Eutelsat">Eutelsat 5°W (Fransat)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size:12px; color:var(--text-muted); font-weight:600; display:block; margin-bottom:4px;">Filtrar por Sistema CAS:</label>
+                                <select id="avail-cas-filter" onchange="filterAvailableChannels()" style="width:100%; padding:8px; background:var(--bg-dark); border:1px solid var(--border); color:#FFF; border-radius:6px;">
+                                    <option value="all">Todos los sistemas CAS</option>
+                                    <option value="NAGRA">Nagravision (0x18xx - Movistar+, HD+, Tivùsat, MEO, Polsat)</option>
+                                    <option value="VIACCESS">Viaccess (0x05xx - Fransat, SRG SSR Suiza)</option>
+                                    <option value="NDS">NDS VideoGuard (0x09xx - Sky DE, Sky IT, Sky UK)</option>
+                                    <option value="SECA">Seca / Mediaguard (0x01xx - Canal+)</option>
+                                    <option value="CONAX">Conax (0x0Bxx - Canal Digital Nordic)</option>
+                                    <option value="IRDETO">Irdeto (0x06xx - Nova Grecia, Digitürk)</option>
+                                    <option value="CW">Cryptoworks (0x0Dxx - ORF Digital)</option>
+                                    <option value="FTA">Free-To-Air (En abierto sin encriptación)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size:12px; color:var(--text-muted); font-weight:600; display:block; margin-bottom:4px;">Buscar por nombre:</label>
+                                <input type="text" id="avail-search-input" oninput="filterAvailableChannels()" placeholder="Buscar canal..." style="width:100%; padding:8px; background:var(--bg-dark); border:1px solid var(--border); color:#FFF; border-radius:6px;">
+                            </div>
+                            <div>
+                                <button type="button" class="btn btn-success" style="width:100%; padding:9px;" onclick="addSelectedAvailableChannels()">📥 Añadir Seleccionados a Mis Canales</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="table-container" style="max-height:420px; overflow-y:auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:36px;"><input type="checkbox" id="chk-master-avail" onchange="toggleSelectAllAvailable(this.checked)"></th>
+                                    <th>Canal</th>
+                                    <th>Satélite / Posición</th>
+                                    <th>Frecuencia / Pol / SR</th>
+                                    <th>SID / PMT</th>
+                                    <th>CAID</th>
+                                    <th>Sistema CAS</th>
+                                    <th>Estado</th>
+                                    <th>Acción</th>
+                                </tr>
+                            </thead>
+                            <tbody id="available-channels-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- SUBSECTION 4: Escáner TV & Validador de Servidores -->
+                <div id="channel-subview-scan" style="display:none;">
+                    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px;">
+                        <div style="font-weight:700; font-size:15px; color:#FFF; margin-bottom:6px;">
+                            📡 Escáner de Canales y Validador con Servidores OSCam/CCcam
+                        </div>
+                        <div class="hint" style="margin-bottom:14px;">
+                            Permite rebuscar canales desde el sintonizador de Android TV (TvContract) o transpondedores satelitales, identificando si usan <strong>Nagravision, Viaccess, NDS, Conax, Seca</strong> y validándolos en tiempo real contra los servidores configurados.
+                        </div>
+
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:14px; align-items:flex-end;">
+                            <div>
+                                <label for="scan-source-select" style="font-size:12px; font-weight:600; color:var(--text-muted); display:block; margin-bottom:4px;">Fuente de Búsqueda:</label>
+                                <select id="scan-source-select" style="width:100%; padding:8px; background:var(--bg-dark); border:1px solid var(--border); color:#FFF; border-radius:6px;">
+                                    <option value="all">Todas las fuentes (Sintonizador TV + Satélites)</option>
+                                    <option value="tv">📺 Sintonizador Android TV (TvContract / Live TV)</option>
+                                    <option value="astra">🛰️ Astra 19.2°E (Movistar+, HD+, Sky DE, Canal+ FR)</option>
+                                    <option value="hispasat">🛰️ Hispasat 30°W (MEO, NOS, Movistar)</option>
+                                    <option value="hotbird">🛰️ Hotbird 13°E (Tivùsat, Polsat, SRG, Nova)</option>
+                                    <option value="other">🛰️ Otros Satélites (Thor 0.8°W, Eutelsat 5°W)</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:8px;">
+                                <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+                                    <input type="checkbox" id="scan-include-encrypted" checked style="accent-color:var(--primary); width:16px; height:16px;">
+                                    <span>🔒 <strong>Buscar canales encriptados</strong> (Scrambled / CAS)</span>
+                                </label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+                                    <input type="checkbox" id="scan-validate-servers" checked style="accent-color:var(--success); width:16px; height:16px;">
+                                    <span>⚡ <strong>Validar con los servidores</strong> configurados</span>
+                                </label>
+                            </div>
+                            <div>
+                                <button type="button" id="btn-run-scan" class="btn btn-primary" style="width:100%; padding:10px;" onclick="runChannelScan()">
+                                    ▶ Iniciar Búsqueda y Validación
+                                </button>
                             </div>
                         </div>
 
-                        <div class="table-container" style="max-height:320px; overflow-y:auto;">
-                            <table id="scanned-channels-table">
-                                <thead>
-                                    <tr>
-                                        <th style="width:36px;"><input type="checkbox" id="chk-master-scan" onchange="toggleSelectAllScanned(this.checked)"></th>
-                                        <th>Canal</th>
-                                        <th>Satélite / Transpondedor</th>
-                                        <th>SID / PMT</th>
-                                        <th>CAID</th>
-                                        <th>Tipo / Encriptación</th>
-                                        <th>Validación con Servidores</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="scanned-channels-tbody"></tbody>
-                            </table>
+                        <!-- Scan Results Container -->
+                        <div id="scan-results-container" style="display:none; margin-top:14px;">
+                            <div id="scan-summary-bar" style="background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:6px; padding:8px 12px; font-size:13px; margin-bottom:10px; color:#93C5FD; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                                <span id="scan-stats-text">Cargando resultados...</span>
+                                <div style="display:flex; gap:8px;">
+                                    <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="toggleSelectAllScanned(true)">Seleccionar Todos</button>
+                                    <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:11px;" onclick="toggleSelectAllScanned(false)">Deseleccionar</button>
+                                    <button type="button" class="btn btn-success" style="padding:4px 12px; font-size:11px;" onclick="importSelectedScannedChannels()">📥 Importar Seleccionados a la Base de Datos</button>
+                                </div>
+                            </div>
+
+                            <div class="table-container" style="max-height:340px; overflow-y:auto;">
+                                <table id="scanned-channels-table">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:36px;"><input type="checkbox" id="chk-master-scan" onchange="toggleSelectAllScanned(this.checked)"></th>
+                                            <th>Canal</th>
+                                            <th>Satélite / Transpondedor</th>
+                                            <th>SID / PMT</th>
+                                            <th>CAID</th>
+                                            <th>Sistema CAS</th>
+                                            <th>Tipo / Encriptación</th>
+                                            <th>Validación con Servidores</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="scanned-channels-tbody"></tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
-                </div>
-
-                <div class="table-container">
-                    <table id="channels-table">
-                        <thead>
-                            <tr>
-                                <th>Channel Name</th>
-                                <th>Satellite</th>
-                                <th>Freq (MHz) / Pol / SR</th>
-                                <th>SID / PMT</th>
-                                <th>CAID</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="channels-tbody"></tbody>
-                    </table>
-                </div>
-
-                <div style="display:flex; justify-content:flex-end; margin-top:20px;">
-                    <button type="button" class="btn btn-success" onclick="saveConfiguration()">Save Channel Database</button>
                 </div>
             </div>
         </div>
@@ -3200,61 +3541,374 @@ class OscamLocalConfigWebServer(
                 });
         }
 
+        function getCasSystemInfo(caidVal) {
+            var caid = 0;
+            if (typeof caidVal === 'number') {
+                caid = caidVal;
+            } else if (typeof caidVal === 'string') {
+                var s = caidVal.trim();
+                caid = s.toLowerCase().startsWith('0x') ? parseInt(s, 16) : parseInt(s, 10);
+            }
+            if (isNaN(caid) || caid === 0) {
+                return { name: 'Free-To-Air', code: 'FTA', color: '#3B82F6', desc: 'En abierto (Sin encriptación)' };
+            }
+            var high = (caid >> 8) & 0xFF;
+            switch(high) {
+                case 0x18:
+                    return { name: 'Nagravision', code: 'NAGRA', color: '#F59E0B', desc: 'Nagravision (Movistar+ 0x1810, HD+ 0x1830/0x1843, Tivùsat 0x183E, MEO 0x1802, Polsat 0x1803)' };
+                case 0x05:
+                    return { name: 'Viaccess', code: 'VIACCESS', color: '#10B981', desc: 'Viaccess (Fransat, SRG SSR Suiza, BIS TV 0x0500)' };
+                case 0x01:
+                    return { name: 'Seca / Mediaguard', code: 'SECA', color: '#8B5CF6', desc: 'Seca / Mediaguard (Canal+ 0x0100)' };
+                case 0x09:
+                    return { name: 'NDS VideoGuard', code: 'NDS', color: '#EC4899', desc: 'NDS VideoGuard (Sky DE 0x098C/0x09C4, Sky IT 0x09CD, Sky UK 0x0963)' };
+                case 0x0B:
+                    return { name: 'Conax', code: 'CONAX', color: '#06B6D4', desc: 'Conax (Canal Digital Nordic, Telewizja na kartę 0x0B00)' };
+                case 0x06:
+                    return { name: 'Irdeto', code: 'IRDETO', color: '#EF4444', desc: 'Irdeto (Nova Grecia, Digitürk 0x0604/0x0624)' };
+                case 0x0D:
+                    return { name: 'Cryptoworks', code: 'CW', color: '#F97316', desc: 'Cryptoworks (ORF Digital Austria 0x0D95)' };
+                case 0x17:
+                    return { name: 'Betacrypt', code: 'BETA', color: '#6366F1', desc: 'Betacrypt (d-box / Premiere legacy)' };
+                case 0x0E:
+                    return { name: 'PowerVu', code: 'PVU', color: '#14B8A6', desc: 'PowerVu (AFN, Discovery)' };
+                case 0x26:
+                    return { name: 'BISS', code: 'BISS', color: '#84CC16', desc: 'BISS Feeds' };
+                case 0x4A:
+                    return { name: 'DRE-Crypt', code: 'DRE', color: '#A855F7', desc: 'DRE-Crypt (Tricolor TV)' };
+                default:
+                    return { name: 'CAS 0x' + caid.toString(16).toUpperCase(), code: 'CAS', color: '#94A3B8', desc: 'CAID 0x' + caid.toString(16).toUpperCase() };
+            }
+        }
+
+        function getCasBadgeHtml(caidVal) {
+            var info = getCasSystemInfo(caidVal);
+            return '<span class="cas-badge-pill" style="background:' + info.color + '22; border:1px solid ' + info.color + '; color:' + info.color + '; padding:3px 8px; border-radius:5px; font-weight:700; font-size:11px; white-space:nowrap; display:inline-block;" title="' + info.desc + '">' +
+                info.code + ' &bull; ' + info.name + '</span>';
+        }
+
+        function onChannelCaidChange(inputEl, badgeContainerId) {
+            var badgeEl = document.getElementById(badgeContainerId);
+            if (badgeEl) {
+                badgeEl.innerHTML = getCasBadgeHtml(inputEl.value);
+            }
+        }
+
+        function switchChannelSubtab(subtab) {
+            document.querySelectorAll('.ch-subtab-btn').forEach(function(btn) {
+                btn.className = 'btn btn-outline ch-subtab-btn';
+            });
+            var activeBtn = document.getElementById('subtab-btn-' + subtab);
+            if (activeBtn) activeBtn.className = 'btn btn-primary ch-subtab-btn';
+
+            var subviews = ['cfg', 'cached', 'avail', 'scan'];
+            subviews.forEach(function(v) {
+                var el = document.getElementById('channel-subview-' + v);
+                if (el) el.style.display = (v === subtab) ? 'block' : 'none';
+            });
+
+            if (subtab === 'cached') {
+                loadCachedChannels();
+            } else if (subtab === 'avail') {
+                loadAvailableChannels();
+            }
+        }
+
+        var currentConfiguredChannels = [];
+
         function renderChannelsTable(channels) {
+            currentConfiguredChannels = channels || [];
+            var countEl = document.getElementById('count-cfg-channels');
+            if (countEl) countEl.innerText = currentConfiguredChannels.length;
+
             var tbody = document.getElementById('channels-tbody');
             tbody.innerHTML = '';
-            channels.forEach(function(ch, idx) {
+            if (currentConfiguredChannels.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:18px; color:var(--text-muted);">No hay canales configurados. Añade uno con el botón superior o desde el Catálogo Satélite.</td></tr>';
+                return;
+            }
+
+            currentConfiguredChannels.forEach(function(ch, idx) {
                 var tr = document.createElement('tr');
                 tr.id = 'ch-row-' + idx;
+                var badgeId = 'ch-cas-badge-' + idx;
                 tr.innerHTML = 
-                    '<td><input type="text" class="ch-name" value="' + ch.name + '" style="min-width:140px;"></td>' +
-                    '<td><input type="text" class="ch-sat" value="' + ch.satellite + '" style="min-width:110px;"></td>' +
+                    '<td><input type="text" class="ch-name" value="' + ch.name + '" style="min-width:140px; font-weight:700;"></td>' +
+                    '<td><input type="text" class="ch-sat" value="' + ch.satellite + '" style="min-width:105px;"></td>' +
                     '<td><div style="display:flex; gap:4px;">' +
-                        '<input type="number" class="ch-freq" value="' + ch.frequency + '" style="width:75px;">' +
+                        '<input type="number" class="ch-freq" value="' + ch.frequency + '" style="width:75px;" title="Frecuencia (MHz)">' +
                         '<select class="ch-pol" style="width:55px;"><option value="H"' + (ch.polarization==='H'?' selected':'') + '>H</option><option value="V"' + (ch.polarization==='V'?' selected':'') + '>V</option></select>' +
-                        '<input type="number" class="ch-sr" value="' + ch.symbolRate + '" style="width:75px;">' +
+                        '<input type="number" class="ch-sr" value="' + ch.symbolRate + '" style="width:75px;" title="Symbol Rate">' +
                     '</div></td>' +
                     '<td><div style="display:flex; gap:4px;">' +
-                        '<input type="number" class="ch-sid" value="' + ch.serviceId + '" style="width:70px;" placeholder="SID">' +
-                        '<input type="number" class="ch-pmt" value="' + ch.pmtPid + '" style="width:70px;" placeholder="PMT">' +
+                        '<input type="number" class="ch-sid" value="' + ch.serviceId + '" style="width:70px;" placeholder="SID" title="Service ID">' +
+                        '<input type="number" class="ch-pmt" value="' + ch.pmtPid + '" style="width:70px;" placeholder="PMT" title="PMT PID">' +
                     '</div></td>' +
-                    '<td><input type="text" class="ch-caid" value="' + ch.caid + '" style="width:80px;"></td>' +
+                    '<td><input type="text" class="ch-caid" value="' + ch.caid + '" style="width:85px; font-family:monospace;" oninput="onChannelCaidChange(this, \'' + badgeId + '\')"></td>' +
+                    '<td><div id="' + badgeId + '">' + getCasBadgeHtml(ch.caid) + '</div></td>' +
                     '<td><div style="display:flex; gap:4px;">' +
-                        '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')">Play</button>' +
-                        '<button type="button" class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="removeChannelRow(' + idx + ')">×</button>' +
+                        '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')" title="Reproducir Stream">Play</button>' +
+                        '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="testSingleChannelEcm(' + idx + ')" title="Test ECM Descrambler">⚡ Test</button>' +
+                        '<button type="button" class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="removeChannelRow(' + idx + ')" title="Eliminar">×</button>' +
                     '</div></td>';
                 tbody.appendChild(tr);
             });
         }
 
-        function addChannelRow() {
+        function filterConfiguredChannelsTable() {
+            var q = (document.getElementById('filter-cfg-search').value || '').toLowerCase().trim();
+            document.querySelectorAll('#channels-tbody tr').forEach(function(tr) {
+                var nameEl = tr.querySelector('.ch-name');
+                var satEl = tr.querySelector('.ch-sat');
+                var caidEl = tr.querySelector('.ch-caid');
+                if (!nameEl) return;
+                var text = (nameEl.value + ' ' + (satEl ? satEl.value : '') + ' ' + (caidEl ? caidEl.value : '')).toLowerCase();
+                tr.style.display = (q === '' || text.indexOf(q) >= 0) ? '' : 'none';
+            });
+        }
+
+        function addChannelRow(preset) {
             var tbody = document.getElementById('channels-tbody');
             var idx = tbody.children.length;
             var tr = document.createElement('tr');
             tr.id = 'ch-row-' + idx;
+            var badgeId = 'ch-cas-badge-' + idx;
+
+            var name = preset ? preset.name : 'Nuevo Canal';
+            var sat = preset ? preset.satellite : 'Astra 19.2°E';
+            var freq = preset ? preset.frequency : 11000;
+            var pol = preset ? preset.polarization : 'H';
+            var sr = preset ? preset.symbolRate : 22000;
+            var sid = preset ? preset.serviceId : (100 + idx);
+            var pmt = preset ? preset.pmtPid : (1024 + idx);
+            var caid = preset ? preset.caid : '0x1810';
+
             tr.innerHTML = 
-                '<td><input type="text" class="ch-name" value="New Channel" style="min-width:140px;"></td>' +
-                '<td><input type="text" class="ch-sat" value="Astra 19.2°E" style="min-width:110px;"></td>' +
+                '<td><input type="text" class="ch-name" value="' + name + '" style="min-width:140px; font-weight:700;"></td>' +
+                '<td><input type="text" class="ch-sat" value="' + sat + '" style="min-width:105px;"></td>' +
                 '<td><div style="display:flex; gap:4px;">' +
-                    '<input type="number" class="ch-freq" value="11000" style="width:75px;">' +
-                    '<select class="ch-pol" style="width:55px;"><option value="H">H</option><option value="V">V</option></select>' +
-                    '<input type="number" class="ch-sr" value="22000" style="width:75px;">' +
+                    '<input type="number" class="ch-freq" value="' + freq + '" style="width:75px;">' +
+                    '<select class="ch-pol" style="width:55px;"><option value="H"' + (pol==='H'?' selected':'') + '>H</option><option value="V"' + (pol==='V'?' selected':'') + '>V</option></select>' +
+                    '<input type="number" class="ch-sr" value="' + sr + '" style="width:75px;">' +
                 '</div></td>' +
                 '<td><div style="display:flex; gap:4px;">' +
-                    '<input type="number" class="ch-sid" value="100" style="width:70px;" placeholder="SID">' +
-                    '<input type="number" class="ch-pmt" value="1024" style="width:70px;" placeholder="PMT">' +
+                    '<input type="number" class="ch-sid" value="' + sid + '" style="width:70px;" placeholder="SID">' +
+                    '<input type="number" class="ch-pmt" value="' + pmt + '" style="width:70px;" placeholder="PMT">' +
                 '</div></td>' +
-                '<td><input type="text" class="ch-caid" value="0x1810" style="width:80px;"></td>' +
+                '<td><input type="text" class="ch-caid" value="' + caid + '" style="width:85px; font-family:monospace;" oninput="onChannelCaidChange(this, \'' + badgeId + '\')"></td>' +
+                '<td><div id="' + badgeId + '">' + getCasBadgeHtml(caid) + '</div></td>' +
                 '<td><div style="display:flex; gap:4px;">' +
                     '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="playChannel(' + idx + ')">Play</button>' +
+                    '<button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="testSingleChannelEcm(' + idx + ')">⚡ Test</button>' +
                     '<button type="button" class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="removeChannelRow(' + idx + ')">×</button>' +
                 '</div></td>';
             tbody.appendChild(tr);
+
+            var countEl = document.getElementById('count-cfg-channels');
+            if (countEl) countEl.innerText = document.querySelectorAll('#channels-tbody tr').length;
         }
 
         function removeChannelRow(idx) {
             var el = document.getElementById('ch-row-' + idx);
             if (el) el.remove();
+            var countEl = document.getElementById('count-cfg-channels');
+            if (countEl) countEl.innerText = document.querySelectorAll('#channels-tbody tr').length;
+        }
+
+        function testSingleChannelEcm(idx) {
+            var tr = document.getElementById('ch-row-' + idx);
+            if (!tr) return;
+            var name = tr.querySelector('.ch-name').value;
+            var sid = parseInt(tr.querySelector('.ch-sid').value, 10) || 1;
+            var caid = tr.querySelector('.ch-caid').value;
+
+            showAlert('Simulando ECM y validando descifrado para ' + name + '...', 'success');
+            fetch('/api/cache/test_ecm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ serviceId: sid, name: name, caid: caid })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(res) {
+                if (res.success) {
+                    showAlert('✓ ' + res.message + ' [CW: ' + res.cw + ', Paridad: ' + res.parity + ']', 'success');
+                } else {
+                    showAlert('Error en test ECM: ' + (res.error || 'Error desconocido'), 'error');
+                }
+            })
+            .catch(function(e) { showAlert('Error: ' + e, 'error'); });
+        }
+
+        function loadCachedChannels() {
+            fetch('/api/channels/cached')
+                .then(function(r) { return r.json(); })
+                .then(function(res) {
+                    if (!res.success) return;
+                    document.getElementById('stat-cw-status').innerText = res.cache_enabled ? 'ACTIVO' : 'INACTIVO';
+                    document.getElementById('stat-cw-status').style.color = res.cache_enabled ? '#10B981' : '#EF4444';
+                    document.getElementById('stat-cw-count').innerText = res.total_cached_cws || 0;
+                    document.getElementById('stat-cw-hits').innerText = res.cache_hits || 0;
+                    document.getElementById('stat-cw-misses').innerText = res.cache_misses || 0;
+                    document.getElementById('stat-cw-ratio').innerText = res.hit_ratio || '0.0%';
+
+                    var tbody = document.getElementById('cached-channels-tbody');
+                    tbody.innerHTML = '';
+                    var channels = res.channels || [];
+
+                    if (channels.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:22px; color:var(--text-muted);">' +
+                            'Aún no hay canales descifrados en memoria RAM activa.<br>' +
+                            '<span style="font-size:12px;">Sintoniza un canal codificado en el televisor o haz clic en "⚡ Simular ECM de Prueba" para verificar el flujo inmediato de Control Words.</span>' +
+                            '</td></tr>';
+                        return;
+                    }
+
+                    channels.forEach(function(ch) {
+                        var tr = document.createElement('tr');
+                        var badgeHtml = '<span style="background:' + ch.cas_color + '22; border:1px solid ' + ch.cas_color + '; color:' + ch.cas_color + '; padding:2px 7px; border-radius:4px; font-weight:700; font-size:11px;">' + ch.cas_code + ' (' + ch.cas_system + ')</span>';
+                        var statusHtml = ch.status === 'ACTIVE_DESCRAMBLING' ?
+                            '<span style="background:rgba(16,185,129,0.15); color:#10B981; border:1px solid #10B981; padding:2px 8px; border-radius:4px; font-weight:700; font-size:11px;">🟢 EN VIVO (' + ch.last_seen_sec_ago + 's)</span>' :
+                            '<span style="background:rgba(251,191,36,0.15); color:#FBBF24; border:1px solid #FBBF24; padding:2px 8px; border-radius:4px; font-weight:700; font-size:11px;">🟡 EN CACHÉ (' + ch.last_seen_sec_ago + 's)</span>';
+
+                        tr.innerHTML = 
+                            '<td style="font-weight:700; color:#FFF;">' + ch.name + '</td>' +
+                            '<td>SID: ' + ch.serviceId + ' / PMT: ' + ch.pmtPid + '</td>' +
+                            '<td><code>' + ch.caid + '</code></td>' +
+                            '<td>' + badgeHtml + '</td>' +
+                            '<td style="font-weight:700;">' + ch.ecm_requests + '</td>' +
+                            '<td style="color:#34D399; font-weight:700;">' + ch.cw_hits + '</td>' +
+                            '<td><code style="font-size:11px; background:rgba(0,0,0,0.4); padding:2px 6px; border-radius:4px;">' + ch.last_cw + '</code></td>' +
+                            '<td>' + (ch.last_parity === 0 ? 'EVEN (0)' : 'ODD (1)') + '</td>' +
+                            '<td style="color:var(--text-muted); font-size:12px;">Hace ' + ch.last_seen_sec_ago + 's</td>' +
+                            '<td>' + statusHtml + '</td>';
+                        tbody.appendChild(tr);
+                    });
+                })
+                .catch(function(e) { showAlert('Error al cargar caché de canales: ' + e, 'error'); });
+        }
+
+        function testSimulatedEcm() {
+            showAlert('Enviando petición ECM de prueba...', 'success');
+            fetch('/api/cache/test_ecm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ serviceId: 29950, name: 'Movistar LaLiga HD', caid: '0x1810' })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(res) {
+                if (res.success) {
+                    showAlert('✓ ' + res.message, 'success');
+                    loadCachedChannels();
+                } else {
+                    showAlert('Error en test ECM: ' + (res.error || 'Error'), 'error');
+                }
+            })
+            .catch(function(e) { showAlert('Error: ' + e, 'error'); });
+        }
+
+        var availableChannelsCache = [];
+
+        function loadAvailableChannels() {
+            fetch('/api/channels/available')
+                .then(function(r) { return r.json(); })
+                .then(function(res) {
+                    if (!res.success) return;
+                    availableChannelsCache = res.channels || [];
+                    var countEl = document.getElementById('count-avail-channels');
+                    if (countEl) countEl.innerText = availableChannelsCache.length;
+                    filterAvailableChannels();
+                })
+                .catch(function(e) { showAlert('Error al cargar catálogo de satélite: ' + e, 'error'); });
+        }
+
+        function filterAvailableChannels() {
+            var satFilter = document.getElementById('avail-sat-filter').value;
+            var casFilter = document.getElementById('avail-cas-filter').value;
+            var search = (document.getElementById('avail-search-input').value || '').toLowerCase().trim();
+
+            var currentConfigSids = {};
+            document.querySelectorAll('#channels-tbody .ch-sid').forEach(function(input) {
+                var s = parseInt(input.value, 10);
+                if (!isNaN(s)) currentConfigSids[s] = true;
+            });
+
+            var filtered = availableChannelsCache.filter(function(ch) {
+                if (satFilter !== 'all' && ch.satellite.indexOf(satFilter) === -1) return false;
+                if (casFilter !== 'all') {
+                    if (casFilter === 'FTA' && ch.is_encrypted) return false;
+                    if (casFilter !== 'FTA' && ch.cas_code !== casFilter) return false;
+                }
+                if (search !== '') {
+                    var fullText = (ch.name + ' ' + ch.satellite + ' ' + ch.caid + ' ' + ch.cas_system).toLowerCase();
+                    if (fullText.indexOf(search) === -1) return false;
+                }
+                return true;
+            });
+
+            var tbody = document.getElementById('available-channels-tbody');
+            tbody.innerHTML = '';
+            if (filtered.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:18px; color:var(--text-muted);">No hay canales en el catálogo con los filtros seleccionados.</td></tr>';
+                return;
+            }
+
+            filtered.forEach(function(ch, idx) {
+                var tr = document.createElement('tr');
+                var isConfigured = !!currentConfigSids[ch.serviceId];
+                var badgeHtml = '<span style="background:' + ch.cas_color + '22; border:1px solid ' + ch.cas_color + '; color:' + ch.cas_color + '; padding:2px 7px; border-radius:4px; font-weight:700; font-size:11px;">' + ch.cas_code + ' (' + ch.cas_system + ')</span>';
+                var statusBadge = isConfigured ?
+                    '<span style="color:#10B981; font-weight:700; font-size:11px;">✓ En tu lista</span>' :
+                    '<span style="color:var(--text-muted); font-size:11px;">Disponible</span>';
+
+                var actionBtn = isConfigured ?
+                    '<button type="button" class="btn btn-outline" style="padding:3px 8px; font-size:11px; opacity:0.6;" disabled>Ya añadido</button>' :
+                    '<button type="button" class="btn btn-primary" style="padding:3px 10px; font-size:11px;" onclick="addSingleAvailableToConfig(' + ch.serviceId + ')">➕ Añadir a mi lista</button>';
+
+                tr.innerHTML = 
+                    '<td><input type="checkbox" class="avail-chk" data-sid="' + ch.serviceId + '"' + (isConfigured ? ' disabled' : '') + ' style="accent-color:var(--primary); width:16px; height:16px;"></td>' +
+                    '<td style="font-weight:700; color:#FFF;">' + ch.name + '</td>' +
+                    '<td style="color:var(--text-muted);">' + ch.satellite + '</td>' +
+                    '<td>' + ch.frequency + ' ' + ch.polarization + ' (' + ch.symbolRate + ')</td>' +
+                    '<td>SID: ' + ch.serviceId + ' / PMT: ' + ch.pmtPid + '</td>' +
+                    '<td><code>' + ch.caid + '</code></td>' +
+                    '<td>' + badgeHtml + '</td>' +
+                    '<td>' + statusBadge + '</td>' +
+                    '<td>' + actionBtn + '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function toggleSelectAllAvailable(checked) {
+            document.querySelectorAll('.avail-chk:not(:disabled)').forEach(function(chk) {
+                chk.checked = checked;
+            });
+        }
+
+        function addSingleAvailableToConfig(serviceId) {
+            var item = availableChannelsCache.find(function(c) { return c.serviceId === serviceId; });
+            if (!item) return;
+            addChannelRow(item);
+            showAlert('✓ Canal "' + item.name + '" añadido a tus canales configurados. Pulsa "Guardar Canales" para persistir.', 'success');
+            filterAvailableChannels();
+        }
+
+        function addSelectedAvailableChannels() {
+            var count = 0;
+            document.querySelectorAll('.avail-chk:checked').forEach(function(chk) {
+                var sid = parseInt(chk.getAttribute('data-sid'), 10);
+                var item = availableChannelsCache.find(function(c) { return c.serviceId === sid; });
+                if (item) {
+                    addChannelRow(item);
+                    count++;
+                }
+            });
+            if (count > 0) {
+                showAlert('✓ ' + count + ' canal(es) añadido(s) a tu lista de canales configurados. Pulsa "Guardar Canales" para persistir.', 'success');
+                switchChannelSubtab('cfg');
+                filterAvailableChannels();
+            } else {
+                showAlert('Por favor, selecciona al menos un canal disponible para añadir.', 'error');
+            }
         }
 
         function playChannel(idx) {
@@ -3358,7 +4012,7 @@ class OscamLocalConfigWebServer(
             var tbody = document.getElementById('scanned-channels-tbody');
             tbody.innerHTML = '';
             if (channels.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:18px; color:var(--text-muted);">No se encontraron canales con los filtros actuales.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:18px; color:var(--text-muted);">No se encontraron canales con los filtros actuales.</td></tr>';
                 return;
             }
 
@@ -3369,6 +4023,7 @@ class OscamLocalConfigWebServer(
                     '<span style="background:rgba(59,130,246,0.15); border:1px solid #3B82F6; color:#93C5FD; padding:2px 8px; border-radius:4px; font-weight:700; font-size:11px;">🔓 En abierto (FTA)</span>';
                 
                 var valBadge = '<span style="font-size:12px;">' + (ch.status_badge || '--') + '</span>';
+                var casBadge = getCasBadgeHtml(ch.caid);
 
                 tr.innerHTML = 
                     '<td><input type="checkbox" class="scanned-chk" data-idx="' + idx + '" checked style="accent-color:var(--primary); width:16px; height:16px;"></td>' +
@@ -3376,6 +4031,7 @@ class OscamLocalConfigWebServer(
                     '<td style="color:var(--text-muted);">' + ch.satellite + (ch.frequency > 0 ? (' (' + ch.frequency + ' ' + ch.polarization + ')') : '') + '</td>' +
                     '<td>SID: ' + ch.serviceId + ' / PMT: ' + ch.pmtPid + '</td>' +
                     '<td><code>' + ch.caid + '</code></td>' +
+                    '<td>' + casBadge + '</td>' +
                     '<td>' + typeBadge + '</td>' +
                     '<td>' + valBadge + '</td>';
                 tbody.appendChild(tr);

@@ -15,23 +15,6 @@ import android.util.Log
  */
 class OscamTvInputBridge(private val context: Context) {
 
-    companion object {
-        private const val TAG = "OscamCasBridge"
-
-        // Common satellite and terrestrial CAIDs
-        val COMMON_SATELLITE_CAIDS = listOf(
-            0x1810, // Nagravision (Movistar+ DVB-S2)
-            0x1830, // Nagravision (HD+ Astra DVB-S2)
-            0x1843, // Nagravision (HD+ Astra DVB-S2)
-            0x0100, // Seca / Mediaguard (Canal+ legacy)
-            0x0500, // Viaccess (SRG Swiss, BIS TV, Fransat DVB-S2/SX)
-            0x0B00, // Conax (Canal Digital DVB-S2)
-            0x0604, // Irdeto (Nova DVB-S2)
-            0x09CD, // NDS VideoGuard (Sky DVB-S2)
-            0x1801  // Nagra Terrestrial (DVB-T2)
-        )
-    }
-
     private var mediaCasInstance: MediaCas? = null
     private var activeSession: MediaCas.Session? = null
     private var tclReceiver: android.content.BroadcastReceiver? = null
@@ -113,9 +96,123 @@ class OscamTvInputBridge(private val context: Context) {
         val parity: Int
     )
 
-    private val cwCache = java.util.concurrent.ConcurrentHashMap<Long, CachedControlWord>()
-    private val cacheHits = java.util.concurrent.atomic.AtomicLong(0)
-    private val cacheMisses = java.util.concurrent.atomic.AtomicLong(0)
+    companion object {
+        private const val TAG = "OscamCasBridge"
+
+        // Common satellite and terrestrial CAIDs
+        val COMMON_SATELLITE_CAIDS = listOf(
+            0x1810, // Nagravision (Movistar+ DVB-S2)
+            0x1830, // Nagravision (HD+ Astra DVB-S2)
+            0x1843, // Nagravision (HD+ Astra DVB-S2)
+            0x0100, // Seca / Mediaguard (Canal+ legacy)
+            0x0500, // Viaccess (SRG Swiss, BIS TV, Fransat DVB-S2/SX)
+            0x0B00, // Conax (Canal Digital DVB-S2)
+            0x0604, // Irdeto (Nova DVB-S2)
+            0x09CD, // NDS VideoGuard (Sky DVB-S2)
+            0x1801  // Nagra Terrestrial (DVB-T2)
+        )
+
+        val cwCache = java.util.concurrent.ConcurrentHashMap<Long, CachedControlWord>()
+        val cacheHits = java.util.concurrent.atomic.AtomicLong(0)
+        val cacheMisses = java.util.concurrent.atomic.AtomicLong(0)
+        val totalEcmsProcessed = java.util.concurrent.atomic.AtomicLong(0)
+
+        data class LiveChannelActivity(
+            val serviceId: Int,
+            var channelName: String,
+            var pmtPid: Int,
+            var caid: Int,
+            var casSystem: String,
+            var casCode: String,
+            var badgeColor: String,
+            var lastEcmTimestamp: Long,
+            var ecmCount: Long,
+            var hitCount: Long,
+            var lastCwHex: String,
+            var lastParity: Int
+        )
+
+        val liveChannels = java.util.concurrent.ConcurrentHashMap<Int, LiveChannelActivity>()
+        var currentTunedSid: Int = 1
+        var currentTunedCaid: Int = 0x1810
+
+        fun recordTunedChannel(serviceId: Int, name: String, pmtPid: Int, caid: Int) {
+            currentTunedSid = serviceId
+            currentTunedCaid = caid
+            val info = CasSystemDetector.detect(caid)
+            val entry = liveChannels.computeIfAbsent(serviceId) {
+                LiveChannelActivity(
+                    serviceId = serviceId,
+                    channelName = name,
+                    pmtPid = pmtPid,
+                    caid = caid,
+                    casSystem = info.systemName,
+                    casCode = info.shortCode,
+                    badgeColor = info.badgeColor,
+                    lastEcmTimestamp = System.currentTimeMillis(),
+                    ecmCount = 0,
+                    hitCount = 0,
+                    lastCwHex = "",
+                    lastParity = 0
+                )
+            }
+            entry.channelName = name
+            entry.pmtPid = pmtPid
+            if (caid > 0) {
+                entry.caid = caid
+                entry.casSystem = info.systemName
+                entry.casCode = info.shortCode
+                entry.badgeColor = info.badgeColor
+            }
+            entry.lastEcmTimestamp = System.currentTimeMillis()
+        }
+
+        fun recordEcmResult(serviceId: Int, caid: Int, isHit: Boolean, cwBytes: ByteArray? = null, parity: Int = 0) {
+            totalEcmsProcessed.incrementAndGet()
+            if (isHit) cacheHits.incrementAndGet() else cacheMisses.incrementAndGet()
+
+            val info = CasSystemDetector.detect(caid)
+            val entry = liveChannels.computeIfAbsent(serviceId) {
+                LiveChannelActivity(
+                    serviceId = serviceId,
+                    channelName = "Channel $serviceId",
+                    pmtPid = 100,
+                    caid = caid,
+                    casSystem = info.systemName,
+                    casCode = info.shortCode,
+                    badgeColor = info.badgeColor,
+                    lastEcmTimestamp = System.currentTimeMillis(),
+                    ecmCount = 0,
+                    hitCount = 0,
+                    lastCwHex = "",
+                    lastParity = parity
+                )
+            }
+            entry.ecmCount++
+            if (isHit) entry.hitCount++
+            if (caid > 0) {
+                entry.caid = caid
+                entry.casSystem = info.systemName
+                entry.casCode = info.shortCode
+                entry.badgeColor = info.badgeColor
+            }
+            entry.lastEcmTimestamp = System.currentTimeMillis()
+            entry.lastParity = parity
+            if (cwBytes != null && cwBytes.isNotEmpty()) {
+                val sb = StringBuilder()
+                for (b in cwBytes) {
+                    sb.append("%02X ".format(b))
+                }
+                entry.lastCwHex = sb.toString().trim()
+            }
+        }
+
+        fun clearCache() {
+            cwCache.clear()
+        }
+
+        fun getLiveChannelsList(): List<LiveChannelActivity> = liveChannels.values.toList()
+    }
 
     fun getCacheHitCount(): Long = cacheHits.get()
     fun getCacheMissCount(): Long = cacheMisses.get()
@@ -133,6 +230,7 @@ class OscamTvInputBridge(private val context: Context) {
     fun recordResolvedCw(ecmData: ByteArray, cw: ByteArray, parity: Int) {
         val hash = computeEcmCrc(ecmData)
         cwCache[hash] = CachedControlWord(cw.clone(), System.currentTimeMillis(), parity)
+        recordEcmResult(currentTunedSid, currentTunedCaid, isHit = false, cwBytes = cw, parity = parity)
     }
 
     /**
@@ -150,13 +248,13 @@ class OscamTvInputBridge(private val context: Context) {
         val cached = cwCache[ecmHash]
         val now = System.currentTimeMillis()
         if (cached != null && (now - cached.timestampMs < 9500)) {
-            cacheHits.incrementAndGet()
+            recordEcmResult(currentTunedSid, currentTunedCaid, isHit = true, cwBytes = cached.controlWord, parity = cached.parity)
             Log.d(TAG, "ECM Cache HIT (CRC 0x%08X) - Reusing resolved CW without network roundtrip".format(ecmHash))
             OscamNativeBridge.nativeSetSoftwareCw(0, cached.parity, cached.controlWord)
             return
         }
 
-        cacheMisses.incrementAndGet()
+        recordEcmResult(currentTunedSid, currentTunedCaid, isHit = false, cwBytes = null, parity = 0)
 
         try {
             session.processEcm(ecmData)

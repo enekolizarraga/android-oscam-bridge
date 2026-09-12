@@ -85,10 +85,18 @@ open class OscamTvInputService : TvInputService() {
 
             // Scrambled channel: engage MediaCas bridge and hardware descrambler
             val sid = channelUri.lastPathSegment?.toIntOrNull() ?: 1
-            CiModuleEmulator.notifyChannelTuned(sid, primaryCaid)
+            val matchingChannel = knownChannels.firstOrNull {
+                it.serviceId == sid || it.streamUrl == channelUri.toString()
+            }
+            val channelName = matchingChannel?.name ?: "Channel $sid"
+            val caidToUse = if (matchingChannel != null && matchingChannel.caid > 0) matchingChannel.caid else primaryCaid
+            val pmtPid = matchingChannel?.pmtPid ?: 100
 
-            Log.i(TAG, "Channel is SCRAMBLED. Engaging OSCam bridge with CAID 0x%04X: $channelUri".format(primaryCaid))
-            val success = bridge.bindChannel(primaryCaid)
+            OscamTvInputBridge.recordTunedChannel(sid, channelName, pmtPid, caidToUse)
+            CiModuleEmulator.notifyChannelTuned(sid, caidToUse)
+
+            Log.i(TAG, "Channel is SCRAMBLED ('$channelName'). Engaging OSCam bridge with CAID 0x%04X: $channelUri".format(caidToUse))
+            val success = bridge.bindChannel(caidToUse)
 
             if (success) {
                 notifyVideoAvailable()
