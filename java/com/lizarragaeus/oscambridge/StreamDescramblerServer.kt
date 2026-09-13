@@ -21,6 +21,7 @@ import java.net.URL
 import java.net.URLDecoder
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -67,7 +68,8 @@ class StreamDescramblerServer(
         private const val PID_AUDIO = 0x0101 // 257
         private const val PID_ECM = 0x1FFE // 8190
 
-        // Streaming Telemetry
+        // Streaming Telemetry & State
+        val isRunning = AtomicBoolean(false)
         val totalBytesStreamed = AtomicLong(0)
         val activeStreamCount = AtomicLong(0)
     }
@@ -98,6 +100,16 @@ class StreamDescramblerServer(
                 createContext("/stream/channelid", StreamChannelHandler())
                 createContext("/play", LegacyStreamPlayHandler())
 
+                // SAT>IP (SES Astra Protocol) Endpoints
+                createContext("/satip/desc.xml", SatipDeviceDescriptionHandler())
+                createContext("/satip_desc.xml", SatipDeviceDescriptionHandler())
+                createContext("/description.xml", SatipDeviceDescriptionHandler())
+                createContext("/satip/m3u", SatipPlaylistM3uHandler())
+                createContext("/satip/playlist.m3u", SatipPlaylistM3uHandler())
+                createContext("/satip/channels.m3u", SatipPlaylistM3uHandler())
+                createContext("/satip/stream", SatipStreamHandler())
+                createContext("/satip/channel", SatipStreamHandler())
+
                 // TVHeadend API Emulation
                 createContext("/api/serverinfo", TvheadendServerInfoHandler())
                 createContext("/api/channel/grid", TvheadendChannelGridHandler())
@@ -105,14 +117,17 @@ class StreamDescramblerServer(
                 executor = null
                 start()
             }
-            Log.i(TAG, "StreamDescramblerServer (TVHeadend-Compatible) listening on http://0.0.0.0:$port")
+            isRunning.set(true)
+            Log.i(TAG, "StreamDescramblerServer (TVHeadend & SAT>IP Compatible) listening on http://0.0.0.0:$port")
         } catch (e: Exception) {
+            isRunning.set(false)
             Log.e(TAG, "Failed to start StreamDescramblerServer: ${e.message}", e)
         }
     }
 
     fun stop() {
         try {
+            isRunning.set(false)
             server?.stop(0)
             server = null
             Log.i(TAG, "StreamDescramblerServer stopped")
@@ -233,7 +248,7 @@ class StreamDescramblerServer(
 
             val json = JSONObject().apply {
                 put("status", "active")
-                put("service", "Android-OSCam-Bridge Embedded TVHeadend Server")
+                put("service", "Android-OSCam-Bridge Embedded TVHeadend & SAT>IP Server")
                 put("port", port)
                 put("mode", "NO_ROOT_DVB_STREAMING")
                 put("total_channels", channels.size)
@@ -242,6 +257,8 @@ class StreamDescramblerServer(
                 put("ecm_sent_count", nativeStats.ecmSentCount)
                 put("cw_received_count", nativeStats.cwReceivedCount)
                 put("playlist_url", "http://$host:$port/playlist.m3u")
+                put("satip_m3u_url", "http://$host:$port/satip/m3u")
+                put("satip_desc_url", "http://$host:$port/satip/desc.xml")
                 put("epg_url", "http://$host:$port/epg.xml")
                 put("tvheadend_serverinfo", "http://$host:$port/api/serverinfo")
             }
@@ -378,6 +395,155 @@ class StreamDescramblerServer(
                 put("entries", entries)
             }
             sendJsonResponse(exchange, 200, json.toString())
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // SAT>IP (SES Astra Protocol) Handlers
+    // ---------------------------------------------------------------------------
+
+    private inner class SatipDeviceDescriptionHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            val host = exchange.requestHeaders.getFirst("Host")?.split(":")?.get(0) ?: "127.0.0.1"
+            val xml = """<?xml version="1.0" encoding="utf-8"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0" configId="1">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <device>
+    <deviceType>urn:ses-com:device:SatIPServer:1</deviceType>
+    <friendlyName>Android-OSCam-Bridge SAT>IP Server</friendlyName>
+    <manufacturer>Android-OSCam-Bridge</manufacturer>
+    <manufacturerURL>https://github.com/enekolizarraga/android-oscam-bridge</manufacturerURL>
+    <modelDescription>SAT>IP DVB-S2/T2 Server with Integrated CCcam/OSCam Descrambler</modelDescription>
+    <modelName>Android OSCam Bridge SAT>IP</modelName>
+    <modelNumber>4.3</modelNumber>
+    <modelURL>https://github.com/enekolizarraga/android-oscam-bridge</modelURL>
+    <serialNumber>001122334455</serialNumber>
+    <UDN>uuid:2fac1234-31f8-11b4-a222-08002b34c003</UDN>
+    <presentationURL>http://$host:$port/</presentationURL>
+    <satip:X_SATIPCAP xmlns:satip="urn:ses-com:satip">DVBS2-4,DVBT2-2</satip:X_SATIPCAP>
+  </device>
+</root>""".trimIndent()
+            val bytes = xml.toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.set("Content-Type", "application/xml; charset=UTF-8")
+            exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.write(bytes)
+            exchange.responseBody.close()
+        }
+    }
+
+    private inner class SatipPlaylistM3uHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                try {
+                    val host = exchange.requestHeaders.getFirst("Host")?.split(":")?.get(0) ?: "127.0.0.1"
+                    val channels = resolveAllChannels()
+                    val m3u = StringBuilder()
+
+                    m3u.append("#EXTM3U name=\"Android TV OSCam SAT>IP Channel List\"\n")
+                    m3u.append("## X-SATIP-SERVER: Android-OSCam-Bridge 4.3 SAT>IP / DVB-S2 (Descrambled via CCcam/OSCam)\n\n")
+
+                    channels.forEach { ch ->
+                        val cas = CasSystemDetector.detect(ch.caid)
+                        val group = if (ch.satellite.isNotBlank()) ch.satellite else "SAT>IP DVB-S2"
+                        val tvgId = if (ch.serviceId > 0) "${ch.serviceId}" else ch.id
+                        val pol = ch.polarization.lowercase().ifBlank { "v" }
+                        val freq = if (ch.frequency > 0) ch.frequency else 10729
+                        val sr = if (ch.symbolRate > 0) ch.symbolRate else 22000
+                        val pmt = if (ch.pmtPid > 0) ch.pmtPid else PID_PMT
+
+                        val playUrl = if (ch.streamUrl.isNotBlank()) {
+                            "http://$host:$port/satip/stream?url=" + java.net.URLEncoder.encode(ch.streamUrl, "UTF-8") + "&sid=" + ch.serviceId
+                        } else {
+                            "http://$host:$port/satip/stream?src=1&freq=$freq&pol=$pol&sr=$sr&pids=0,$pmt,$PID_VIDEO,$PID_AUDIO,$PID_ECM&sid=" + ch.serviceId
+                        }
+
+                        val casBadge = if (ch.caid > 0) " [${cas.shortCode}]" else " [FTA]"
+                        m3u.append("#EXTINF:-1 tvg-id=\"$tvgId\" tvg-name=\"${ch.name}\" group-title=\"$group\" tvg-type=\"tv\",${ch.name}$casBadge\n")
+                        m3u.append("$playUrl\n\n")
+                    }
+
+                    val bytes = m3u.toString().toByteArray(Charsets.UTF_8)
+                    exchange.responseHeaders.set("Content-Type", "audio/x-mpegurl; charset=UTF-8")
+                    exchange.responseHeaders.set("Content-Disposition", "inline; filename=satip_channels.m3u")
+                    exchange.sendResponseHeaders(200, bytes.size.toLong())
+                    exchange.responseBody.write(bytes)
+                    exchange.responseBody.close()
+                } catch (e: Exception) {
+                    sendHttpError(exchange, 500, "SAT>IP Playlist error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private inner class SatipStreamHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            scope.launch {
+                if (exchange.requestMethod.equals("OPTIONS", ignoreCase = true)) {
+                    exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+                    exchange.responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+                    exchange.responseHeaders.set("Access-Control-Allow-Headers", "*")
+                    exchange.sendResponseHeaders(204, -1)
+                    exchange.responseBody.close()
+                    return@launch
+                }
+                activeStreamCount.incrementAndGet()
+                try {
+                    val path = exchange.requestURI.path
+                    val query = exchange.requestURI.query ?: ""
+                    val params = parseQuery(query)
+
+                    val sidFromPath = path.substringAfterLast("/").toIntOrNull()
+                    val sidFromQuery = params["sid"]?.toIntOrNull() ?: params["channel"]?.toIntOrNull()
+                    val freqParam = params["freq"]?.toIntOrNull()
+                    val polParam = params["pol"]?.uppercase()
+
+                    val allChannels = resolveAllChannels()
+                    val matchedChannel = when {
+                        sidFromPath != null -> allChannels.firstOrNull { it.serviceId == sidFromPath }
+                        sidFromQuery != null -> allChannels.firstOrNull { it.serviceId == sidFromQuery }
+                        freqParam != null -> allChannels.firstOrNull {
+                            Math.abs(it.frequency - freqParam) <= 5 &&
+                            (polParam == null || it.polarization.equals(polParam, ignoreCase = true))
+                        }
+                        else -> null
+                    }
+                    val channel: ChannelStreamItem = matchedChannel
+                        ?: allChannels.firstOrNull()
+                        ?: ChannelStreamItem("30001", "La 1 HD", 30001, PID_PMT, 0x1810, "Astra 19.2°E", 10729, "V", 22000)
+
+                    Log.i(TAG, "SatipStreamHandler: SAT>IP client tuned '${channel.name}' (SID ${channel.serviceId}, Freq ${channel.frequency} MHz, CAID 0x%04X)".format(channel.caid))
+
+                    // Notify CAS bridge of tuned channel to start ECM requests via CCcam/OSCam
+                    OscamTvInputBridge.recordTunedChannel(channel.serviceId, channel.name, channel.pmtPid, channel.caid)
+
+                    exchange.responseHeaders.set("Content-Type", "video/mp2t")
+                    exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
+                    exchange.responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+                    exchange.responseHeaders.set("Access-Control-Allow-Headers", "*")
+                    exchange.responseHeaders.set("Cache-Control", "no-cache, no-store, must-revalidate")
+                    exchange.responseHeaders.set("Pragma", "no-cache")
+                    exchange.responseHeaders.set("Accept-Ranges", "none")
+                    exchange.sendResponseHeaders(200, 0)
+
+                    val outputStream = exchange.responseBody
+                    val extUrl = params["url"] ?: channel.streamUrl
+
+                    if (extUrl.isNotBlank()) {
+                        streamFromExternalUrl(extUrl, outputStream)
+                    } else {
+                        generateLiveDvbTsStream(channel, outputStream)
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "SatipStreamHandler ended: ${e.message}")
+                } finally {
+                    activeStreamCount.decrementAndGet()
+                    try { exchange.responseBody.close() } catch (_: Exception) {}
+                }
+            }
         }
     }
 

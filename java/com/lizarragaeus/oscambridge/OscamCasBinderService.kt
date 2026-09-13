@@ -118,8 +118,19 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         // Start embedded web configuration server (port 8080)
         startEmbeddedWebServer()
 
-        // Start embedded stream descrambler proxy (port 9191)
-        startStreamDescramblerServer()
+        // Start embedded stream descrambler proxy (port 9191) only if enabled by user
+        serviceScope.launch {
+            try {
+                val config = repository.getCurrentConfig()
+                if (config.tvheadendEnabled) {
+                    startStreamDescramblerServer()
+                } else {
+                    Log.i(TAG, "StreamDescramblerServer / TVHeadend is disabled by default. Awaiting user activation via Web UI.")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not check tvheadendEnabled: ${e.message}")
+            }
+        }
 
         // Start Virtual CI+ CAM Module Emulator for television CI slot detection
         serviceScope.launch {
@@ -140,6 +151,11 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
                 onConfigUpdatedCallback = { newConfig ->
                     Log.i(TAG, "Configuration updated via Web UI: ${newConfig.serverHost}:${newConfig.serverPort}. Restarting bridge...")
                     CiModuleEmulator.updateConfig(newConfig)
+                    if (newConfig.tvheadendEnabled) {
+                        startStreamDescramblerServer()
+                    } else {
+                        stopStreamDescramblerServer()
+                    }
                     restartBridge()
                 },
                 port = 8080
@@ -152,8 +168,10 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         }
     }
 
-    private fun startStreamDescramblerServer() {
+    fun startStreamDescramblerServer() {
+        if (streamServer != null && StreamDescramblerServer.isRunning.get()) return
         try {
+            streamServer?.stop()
             streamServer = StreamDescramblerServer(
                 context = applicationContext,
                 repository = repository,
@@ -163,6 +181,16 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
             Log.i(TAG, "StreamDescramblerServer / Embedded TVHeadend ready at http://$localIp:9191")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting StreamDescramblerServer: ${e.message}", e)
+        }
+    }
+
+    fun stopStreamDescramblerServer() {
+        try {
+            streamServer?.stop()
+            streamServer = null
+            Log.i(TAG, "StreamDescramblerServer / Embedded TVHeadend stopped")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping StreamDescramblerServer: ${e.message}", e)
         }
     }
 
@@ -556,7 +584,7 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
         CiModuleEmulator.stop()
         serviceScope.cancel()
         webServer?.stop()
-        streamServer?.stop()
+        stopStreamDescramblerServer()
         OscamNativeBridge.nativeUnregisterCallback()
         releaseLocks()
     }

@@ -172,6 +172,7 @@ data class OscamConfig(
     val connectTimeoutMs: Int = 4000,
     val reconnectIntervalMs: Int = 2000,
     val cwCacheEnabled: Boolean = true,
+    val tvheadendEnabled: Boolean = false,
     val channels: List<OscamChannelEntry> = defaultChannels(),
     val wolProfiles: List<OscamWolEntry> = defaultWolProfiles()
 ) {
@@ -330,6 +331,7 @@ class OscamConfigRepository(private val context: Context) {
         val KEY_TIMEOUT = intPreferencesKey("oscam_timeout_ms")
         val KEY_RECONNECT_INTERVAL = intPreferencesKey("oscam_reconnect_interval_ms")
         val KEY_CW_CACHE = booleanPreferencesKey("oscam_cw_cache")
+        val KEY_TVHEADEND_ENABLED = booleanPreferencesKey("oscam_tvheadend_enabled")
         val KEY_CHANNELS_JSON = stringPreferencesKey("oscam_channels_json")
         val KEY_WOL_JSON = stringPreferencesKey("oscam_wol_json")
 
@@ -359,6 +361,7 @@ class OscamConfigRepository(private val context: Context) {
             val timeout = prefs[KEY_TIMEOUT] ?: 4000
             val reconnect = prefs[KEY_RECONNECT_INTERVAL] ?: 2000
             val cwCache = prefs[KEY_CW_CACHE] ?: true
+            val tvhEnabled = prefs[KEY_TVHEADEND_ENABLED] ?: false
 
             val serversJson = prefs[KEY_SERVERS_JSON]
             val parsedServers = if (!serversJson.isNullOrEmpty()) {
@@ -391,6 +394,7 @@ class OscamConfigRepository(private val context: Context) {
                 connectTimeoutMs = timeout,
                 reconnectIntervalMs = reconnect,
                 cwCacheEnabled = cwCache,
+                tvheadendEnabled = tvhEnabled,
                 channels = parsedChannels,
                 wolProfiles = parsedWol
             )
@@ -417,6 +421,7 @@ class OscamConfigRepository(private val context: Context) {
                     prefs[KEY_TIMEOUT] = config.connectTimeoutMs
                     prefs[KEY_RECONNECT_INTERVAL] = config.reconnectIntervalMs
                     prefs[KEY_CW_CACHE] = config.cwCacheEnabled
+                    prefs[KEY_TVHEADEND_ENABLED] = config.tvheadendEnabled
                 }
                 Log.i(TAG, "Configuration saved to DataStore (${config.servers.size} servers, ${config.channels.size} channels)")
                 syncNativeConfigFile(config)

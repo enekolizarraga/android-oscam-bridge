@@ -208,6 +208,7 @@ class OscamLocalConfigWebServer(
                         put("reconnects", stats.reconnectCount)
                         put("last_cw_time_ms", stats.lastCwTimeMs)
                         put("last_error", err)
+                        put("tvheadend_running", StreamDescramblerServer.isRunning.get())
                         put("uptime_sec", System.currentTimeMillis() / 1000)
                     }
 
@@ -723,26 +724,40 @@ class OscamLocalConfigWebServer(
                         val body = exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
                         val json = JSONObject(body)
                         val port = json.optInt("port", 9191)
-                        val bufSize = json.optInt("buffer_packets", 348)
+                        val bufSize = json.optInt("buffer_packets", json.optInt("ts_buffer_packets", 348))
                         val m3uFmt = json.optString("m3u_format", "standard")
-                        appendLog("[TVHEADEND] Autonomous server config updated: port=$port, buffer=$bufSize packets, format=$m3uFmt")
+                        val currentConfig = repository.getCurrentConfig()
+                        val isEnabled = if (json.has("enabled")) json.getBoolean("enabled") else currentConfig.tvheadendEnabled
+                        val updatedConfig = currentConfig.copy(tvheadendEnabled = isEnabled)
+                        repository.saveConfig(updatedConfig)
+                        onConfigUpdatedCallback(updatedConfig)
+                        appendLog("[TVHEADEND] Servidor config actualizado: enabled=$isEnabled, port=$port, buffer=$bufSize paquetes, format=$m3uFmt")
                         val res = JSONObject().apply {
                             put("success", true)
-                            put("message", "Configuración de TVHeadend actualizada y guardada con éxito.")
+                            put("enabled", isEnabled)
+                            put("running", StreamDescramblerServer.isRunning.get())
+                            put("port", port)
+                            put("message", if (isEnabled) "Servidor TVHeadend / SAT>IP activado correctamente en puerto $port." else "Servidor TVHeadend / SAT>IP detenido correctamente.")
                         }
                         sendJsonResponse(exchange, 200, res.toString())
                     } else {
+                        val currentConfig = repository.getCurrentConfig()
                         val nativeStats = OscamNativeBridge.getStats()
+                        val isRunning = StreamDescramblerServer.isRunning.get()
                         val res = JSONObject().apply {
                             put("success", true)
-                            put("service", "Android-OSCam-Bridge Autonomous TVHeadend Engine")
+                            put("service", "Android-OSCam-Bridge Autonomous TVHeadend & SAT>IP Engine")
+                            put("enabled", currentConfig.tvheadendEnabled)
+                            put("running", isRunning)
                             put("port", 9191)
                             put("buffer_packets", 348)
                             put("m3u_format", "standard")
-                            put("active_streams", StreamDescramblerServer.activeStreamCount.get())
+                            put("active_streams", if (isRunning) StreamDescramblerServer.activeStreamCount.get() else 0)
                             put("total_bytes_streamed", StreamDescramblerServer.totalBytesStreamed.get())
                             put("ecm_resolved_count", nativeStats.cwReceivedCount)
                             put("m3u_url", "http://$host:9191/playlist.m3u")
+                            put("satip_m3u_url", "http://$host:9191/satip/m3u")
+                            put("satip_desc_url", "http://$host:9191/satip/desc.xml")
                             put("epg_url", "http://$host:9191/epg.xml")
                             put("serverinfo_url", "http://$host:9191/api/serverinfo")
                         }
@@ -1093,6 +1108,8 @@ class OscamLocalConfigWebServer(
                         wolList.addAll(currentConfig.wolProfiles.ifEmpty { OscamConfig.defaultWolProfiles() })
                     }
 
+                    val tvhEnabled = json.optBoolean("tvheadend_enabled", currentConfig.tvheadendEnabled)
+
                     val newConfig = OscamConfig(
                         servers = serversList,
                         deliverySystem = delivery,
@@ -1101,6 +1118,7 @@ class OscamLocalConfigWebServer(
                         connectTimeoutMs = timeout,
                         reconnectIntervalMs = reconnectInterval,
                         cwCacheEnabled = cwCache,
+                        tvheadendEnabled = tvhEnabled,
                         channels = channelsList,
                         wolProfiles = wolList
                     )
@@ -3231,8 +3249,9 @@ class OscamLocalConfigWebServer(
                     <span id="header-cable-dot" class="status-dot" style="background:${if (tuner.cableConnected) "#10B981" else "#EF4444"}; box-shadow:0 0 10px ${if (tuner.cableConnected) "#10B981" else "#EF4444"};"></span>
                     <span id="header-cable-text">${if (tuner.cableConnected) "Cable Sat: CONECTADO" else "Cable Sat: DESCONECTADO"}</span>
                 </span>
-                <span class="status-badge" id="header-tvh-badge" style="background:rgba(139,92,246,0.12); border-color:rgba(139,92,246,0.35); color:#C4B5FD;">
-                    <span>📡 TVH :9191</span>
+                <span class="status-badge" id="header-tvh-badge" style="background:${if (StreamDescramblerServer.isRunning.get()) "rgba(139,92,246,0.15); border-color:#8B5CF6; color:#C4B5FD;" else "rgba(148,163,184,0.1); border-color:rgba(148,163,184,0.25); color:#94A3B8;"}">
+                    <span id="header-tvh-dot" class="status-dot" style="background:${if (StreamDescramblerServer.isRunning.get()) "#10B981" else "#94A3B8"}; box-shadow:0 0 10px ${if (StreamDescramblerServer.isRunning.get()) "#10B981" else "transparent"};"></span>
+                    <span id="header-tvh-text">${if (StreamDescramblerServer.isRunning.get()) "TVHeadend: 9191" else "TVHeadend: Inactivo"}</span>
                 </span>
                 <button type="button" class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="testAllServers()" title="Ping a todos los servidores">⚡ Ping All</button>
                 <div class="status-badge" id="pill-badge">
@@ -3819,9 +3838,31 @@ class OscamLocalConfigWebServer(
                         <div class="panel-title">📡 Servidor TVHeadend Embebido &amp; Streaming DVB-IPTV (Modo Sin Root)</div>
                         <div class="panel-desc">Transmite todos tus canales descodificados con CCcam/OSCam directamente a TiviMate, Kodi o VLC sin necesidad de rootear la Smart TV.</div>
                     </div>
-                    <div style="display:flex; gap:8px;">
-                        <a href="/playlist.m3u" class="btn btn-purple" download="channels.m3u">⬇ Descargar M3U</a>
-                        <a href="/epg.xml" class="btn btn-primary" download="epg.xml">📅 Descargar EPG (XMLTV)</a>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <a href="/playlist.m3u" class="btn btn-purple" download="channels.m3u">⬇ M3U IPTV</a>
+                        <a href="/satip/m3u" class="btn btn-outline" download="satip_channels.m3u">📡 SAT&gt;IP M3U</a>
+                        <a href="/epg.xml" class="btn btn-primary" download="epg.xml">📅 EPG (XMLTV)</a>
+                    </div>
+                </div>
+
+                <!-- TVHeadend / SAT>IP Server Interactive Activation Card -->
+                <div id="tvh-service-card" style="background:var(--bg-card); border:1px solid ${if (StreamDescramblerServer.isRunning.get()) "#10B981" else "var(--border)"}; border-radius:12px; padding:18px; margin-bottom:18px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            <span id="tvh-service-dot" style="width:14px; height:14px; border-radius:50%; background:${if (StreamDescramblerServer.isRunning.get()) "#10B981" else "#94A3B8"}; box-shadow:0 0 12px ${if (StreamDescramblerServer.isRunning.get()) "#10B981" else "transparent"}; display:inline-block;"></span>
+                            <div>
+                                <div style="font-weight:800; font-size:16px;" id="tvh-service-title">Servidor TVHeadend &amp; SAT&gt;IP Portátil</div>
+                                <div style="font-size:12px; color:var(--text-muted);" id="tvh-service-desc">${if (StreamDescramblerServer.isRunning.get()) "🟢 Estado: Activo en puerto 9191 (IPTV + SAT>IP + Descodificación CCcam/OSCam)" else "⚪ Estado: Inactivo (Desactivado por defecto para ahorrar CPU/Batería)"}</div>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <button type="button" class="btn ${if (StreamDescramblerServer.isRunning.get()) "btn-danger" else "btn-success"}" id="btn-toggle-tvh" onclick="toggleTvheadendServer()" style="font-weight:700; padding:10px 20px;">
+                                ${if (StreamDescramblerServer.isRunning.get()) "⏹ Detener Servidor TVHeadend / SAT>IP" else "▶ Iniciar Servidor TVHeadend / SAT>IP"}
+                            </button>
+                        </div>
+                    </div>
+                    <div id="tvh-service-warning" style="margin-top:12px; font-size:12px; color:#FBBF24; display:${if (StreamDescramblerServer.isRunning.get()) "none" else "block"}; background:rgba(245,158,11,0.1); padding:10px 14px; border-radius:8px; border:1px solid rgba(245,158,11,0.25);">
+                        ⚠️ <strong>El servidor portátil no viene activado de fábrica</strong>. Para recibir streams en VLC, TiviMate o sintonizadores SAT&gt;IP con descodificación CCcam/OSCam en tiempo real, pulsa el botón verde <strong>Iniciar Servidor</strong>.
                     </div>
                 </div>
 
@@ -3832,14 +3873,28 @@ class OscamLocalConfigWebServer(
                     </div>
                     <p style="font-size:13px; line-height:1.6; color:#E2E8F0; margin-bottom:10px;">
                         La gran mayoría de televisores (Sony Bravia, Philips, TCL, Xiaomi, Chromecast con Google TV) no permiten rootear o tienen SELinux bloqueando los dispositivos del sintonizador interno.
-                        Para resolver esto, la app incluye un <strong>servidor de streaming TVHeadend completo</strong> que descifra los canales con CCcam/OSCam en tiempo real en espacio de usuario.
+                        Para resolver esto, la app incluye un <strong>servidor de streaming TVHeadend &amp; SAT&gt;IP autónomo</strong> que descifra los canales con CCcam/OSCam en tiempo real en espacio de usuario.
                     </p>
-                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px; margin-top:12px;">
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:12px; margin-top:12px;">
                         <div style="background:var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
                             <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">LISTA M3U IPTV (Canales Descodificados):</div>
                             <div style="display:flex; gap:8px; align-items:center;">
                                 <code style="font-size:12px; flex:1; overflow-x:auto;">http://${realIp}:9191/playlist.m3u</code>
                                 <button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="copyToClipboard('http://${realIp}:9191/playlist.m3u')">Copiar</button>
+                            </div>
+                        </div>
+                        <div style="background:var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+                            <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">LISTA SAT&gt;IP (DVB-S2 + CCcam/OSCam):</div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <code style="font-size:12px; flex:1; overflow-x:auto;">http://${realIp}:9191/satip/m3u</code>
+                                <button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="copyToClipboard('http://${realIp}:9191/satip/m3u')">Copiar</button>
+                            </div>
+                        </div>
+                        <div style="background:var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+                            <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">DESCRIPTOR UPNP SAT&gt;IP (Astra):</div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <code style="font-size:12px; flex:1; overflow-x:auto;">http://${realIp}:9191/satip/desc.xml</code>
+                                <button type="button" class="btn btn-outline" style="padding:4px 8px; font-size:11px;" onclick="copyToClipboard('http://${realIp}:9191/satip/desc.xml')">Copiar</button>
                             </div>
                         </div>
                         <div style="background:var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
@@ -6115,18 +6170,22 @@ class OscamLocalConfigWebServer(
             showAlert('✓ Descargando archivo .m3u para abrir en VLC Media Player.', 'success');
         }
 
-        // TVHeadend Autonomous Server Configuration
+        // TVHeadend & SAT>IP Server Configuration & Controls
+        var tvhCurrentRunning = false;
+
         function loadTvheadendConfig() {
             fetch('/api/tvheadend/config')
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
+                    tvhCurrentRunning = !!data.running;
+                    updateTvheadendUiState(data.running, data.enabled);
                     if (data.port) {
                         var p = document.getElementById('tvh-port');
                         if (p) p.value = data.port;
                     }
-                    if (data.ts_buffer_packets) {
+                    if (data.buffer_packets || data.ts_buffer_packets) {
                         var b = document.getElementById('tvh-buffer');
-                        if (b) b.value = String(data.ts_buffer_packets);
+                        if (b) b.value = String(data.buffer_packets || data.ts_buffer_packets);
                     }
                     if (data.m3u_format) {
                         var f = document.getElementById('tvh-m3u-fmt');
@@ -6138,6 +6197,90 @@ class OscamLocalConfigWebServer(
                 });
         }
 
+        function updateTvheadendUiState(isRunning, isEnabled) {
+            tvhCurrentRunning = !!isRunning;
+            var badge = document.getElementById('header-tvh-badge');
+            var dot = document.getElementById('header-tvh-dot');
+            var text = document.getElementById('header-tvh-text');
+            var card = document.getElementById('tvh-service-card');
+            var sDot = document.getElementById('tvh-service-dot');
+            var sDesc = document.getElementById('tvh-service-desc');
+            var sWarn = document.getElementById('tvh-service-warning');
+            var btn = document.getElementById('btn-toggle-tvh');
+
+            if (isRunning) {
+                if (badge) {
+                    badge.style.background = 'rgba(139,92,246,0.15)';
+                    badge.style.borderColor = '#8B5CF6';
+                    badge.style.color = '#C4B5FD';
+                }
+                if (dot) {
+                    dot.style.background = '#10B981';
+                    dot.style.boxShadow = '0 0 10px #10B981';
+                }
+                if (text) text.innerText = 'TVHeadend: 9191';
+
+                if (card) card.style.borderColor = '#10B981';
+                if (sDot) {
+                    sDot.style.background = '#10B981';
+                    sDot.style.boxShadow = '0 0 12px #10B981';
+                }
+                if (sDesc) sDesc.innerText = '🟢 Estado: Activo en puerto 9191 (IPTV + SAT>IP + Descodificación CCcam/OSCam)';
+                if (sWarn) sWarn.style.display = 'none';
+                if (btn) {
+                    btn.className = 'btn btn-danger';
+                    btn.innerText = '⏹ Detener Servidor TVHeadend / SAT>IP';
+                }
+            } else {
+                if (badge) {
+                    badge.style.background = 'rgba(148,163,184,0.1)';
+                    badge.style.borderColor = 'rgba(148,163,184,0.25)';
+                    badge.style.color = '#94A3B8';
+                }
+                if (dot) {
+                    dot.style.background = '#94A3B8';
+                    dot.style.boxShadow = 'none';
+                }
+                if (text) text.innerText = 'TVHeadend: Inactivo';
+
+                if (card) card.style.borderColor = 'var(--border)';
+                if (sDot) {
+                    sDot.style.background = '#94A3B8';
+                    sDot.style.boxShadow = 'none';
+                }
+                if (sDesc) sDesc.innerText = '⚪ Estado: Inactivo (Desactivado por defecto para ahorrar CPU/Batería)';
+                if (sWarn) sWarn.style.display = 'block';
+                if (btn) {
+                    btn.className = 'btn btn-success';
+                    btn.innerText = '▶ Iniciar Servidor TVHeadend / SAT>IP';
+                }
+            }
+        }
+
+        function toggleTvheadendServer() {
+            var targetState = !tvhCurrentRunning;
+            var port = parseInt(document.getElementById('tvh-port').value, 10) || 9191;
+            var buffer = parseInt(document.getElementById('tvh-buffer').value, 10) || 348;
+            var fmt = document.getElementById('tvh-m3u-fmt').value || 'standard';
+
+            showAlert((targetState ? 'Iniciando' : 'Deteniendo') + ' servidor TVHeadend & SAT>IP...', 'info');
+            fetch('/api/tvheadend/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: targetState, port: port, buffer_packets: buffer, m3u_format: fmt })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(res) {
+                if (res.success) {
+                    updateTvheadendUiState(res.running !== undefined ? res.running : targetState, targetState);
+                    showAlert('✓ ' + (res.message || 'Estado del servidor TVHeadend actualizado.'), 'success');
+                } else {
+                    showAlert('Error: ' + (res.error || 'No se pudo cambiar el estado de TVHeadend'), 'error');
+                }
+            })
+            .catch(function(e) { showAlert('Error: ' + e, 'error'); });
+        }
+
         function saveTvheadendConfig() {
             var port = parseInt(document.getElementById('tvh-port').value, 10) || 9191;
             var buffer = parseInt(document.getElementById('tvh-buffer').value, 10) || 348;
@@ -6147,7 +6290,7 @@ class OscamLocalConfigWebServer(
             fetch('/api/tvheadend/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ port: port, ts_buffer_packets: buffer, m3u_format: fmt })
+                body: JSON.stringify({ enabled: tvhCurrentRunning, port: port, buffer_packets: buffer, m3u_format: fmt })
             })
             .then(function(r) { return r.json(); })
             .then(function(res) {
@@ -6165,11 +6308,12 @@ class OscamLocalConfigWebServer(
             fetch('/api/tvheadend/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ restart: true })
+                body: JSON.stringify({ enabled: true, restart: true })
             })
             .then(function(r) { return r.json(); })
             .then(function(res) {
                 showAlert('✓ ' + (res.message || 'Servidor TVHeadend reiniciado.'), 'success');
+                loadTvheadendConfig();
             })
             .catch(function(e) { showAlert('Error al reiniciar TVHeadend: ' + e, 'error'); });
         }
@@ -6749,6 +6893,10 @@ class OscamLocalConfigWebServer(
                 .then(function(data) {
                     document.getElementById('val-cws').innerText = data.cws_received || 0;
                     document.getElementById('val-ecms').innerText = data.ecms_sent || 0;
+
+                    if (data.tvheadend_running !== undefined && data.tvheadend_running !== tvhCurrentRunning) {
+                        updateTvheadendUiState(data.tvheadend_running, data.tvheadend_running);
+                    }
 
                     var st = data.status || 'DISCONNECTED';
                     var dot = document.getElementById('pill-dot');

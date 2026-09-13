@@ -509,6 +509,7 @@ android-oscam-bridge/
 
 | Document | Purpose |
 |---|---|
+| [**`docs/GUIA_COMPLETA_ROOT.md`**](docs/GUIA_COMPLETA_ROOT.md) | **Guía Completa en Modo ROOT**: Manual técnico para televisores rooteados (Magisk, KernelSU, APatch), inyección directa por hardware SoC (`ioctl CA_SET_DESCR`), reglas SELinux y 0% de uso de CPU. |
 | [**`docs/MANUAL_USUARIO_INTERFAZ_WEB.md`**](docs/MANUAL_USUARIO_INTERFAZ_WEB.md) | **Manual de Usuario Completo**: Guía detallada de la consola web (`:8080`), gestión de parrilla de canales, sintonización, TVHeadend autónomo y reproductor web `mpegts.js`. |
 | [**`docs/DATOS_REALES_VS_MOCKS_AUDIT.md`**](docs/DATOS_REALES_VS_MOCKS_AUDIT.md) | **Auditoría de Datos 100% Reales**: Verificación técnica de telemetría de hardware (sysfs, `/dev/dvb`, Android HAL), cero datos mock, espectro RF y cálculo real de CRC32 MPEG-2. |
 | [**`docs/TVHEADEND_NO_ROOT_GUIDE.md`**](docs/TVHEADEND_NO_ROOT_GUIDE.md) | **Guía TVHeadend Sin Root**: Instrucciones para utilizar la app como servidor de streaming autónomo con clientes CCcam y OSCam embebidos sin modificar el sistema operativo del TV. |
