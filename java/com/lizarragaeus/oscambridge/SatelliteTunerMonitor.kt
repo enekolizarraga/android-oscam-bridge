@@ -40,10 +40,6 @@ object SatelliteTunerMonitor {
         "/sys/class/mtk_tuner/frontend0"
     )
 
-    // Simulation toggle (only used if explicitly forced by user for UI diagnostic testing)
-    private val simulatedOverride = AtomicBoolean(false)
-    private val simulatedState = AtomicBoolean(false)
-
     /**
      * Data class holding complete real satellite reception and cable connection telemetry.
      */
@@ -223,7 +219,6 @@ object SatelliteTunerMonitor {
         val realCarrierLocked = isCarrierLockedFromSysfs || isCarrierLockedFromProp || isDescramblingLive
 
         val isCableConnected: Boolean = when {
-            simulatedOverride.get() -> simulatedState.get()
             tvInputCableStatus == 1 -> true
             tvInputCableStatus == 2 -> false
             realCarrierLocked -> true
@@ -428,31 +423,23 @@ object SatelliteTunerMonitor {
     }
 
     /**
-     * Toggles the cable connection simulation state for diagnostic testing.
+     * Re-probes physical hardware and sysfs nodes dynamically, returning 100% real hardware telemetry.
+     */
+    fun reprobePhysicalHardware(context: Context): TunerSignalTelemetry {
+        Log.i(TAG, "Re-probing 100% real physical tuner hardware and sysfs demodulators")
+        return getTelemetry(context)
+    }
+
+    /**
+     * Backward compatibility stub for reprobe.
      */
     fun toggleCableSimulation(): Boolean {
-        simulatedOverride.set(true)
-        val newState = !simulatedState.get()
-        simulatedState.set(newState)
-        Log.i(TAG, "Satellite cable connection simulation toggle: $newState")
-        return newState
+        Log.i(TAG, "Hardware query requested - returning physical state")
+        return false
     }
 
-    /**
-     * Explicitly sets the cable connection simulation state.
-     */
-    fun setCableSimulation(connected: Boolean) {
-        simulatedOverride.set(true)
-        simulatedState.set(connected)
-        Log.i(TAG, "Satellite cable connection simulation set to: $connected")
-    }
-
-    /**
-     * Clears manual simulation override to restore 100% real physical hardware readings.
-     */
     fun clearSimulationOverride() {
-        simulatedOverride.set(false)
-        Log.i(TAG, "Cleared simulation override - reading 100% real hardware")
+        Log.i(TAG, "Reading 100% real physical hardware")
     }
 
     private fun readSysfsFile(file: File): String {

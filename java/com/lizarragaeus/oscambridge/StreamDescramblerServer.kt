@@ -661,11 +661,12 @@ class StreamDescramblerServer(
         buf[15] = (0xE0 or ((pmtPid shr 8) and 0x1F)).toByte()
         buf[16] = (pmtPid and 0xFF).toByte()
 
-        // Dummy CRC32
-        buf[17] = 0x12.toByte()
-        buf[18] = 0x34.toByte()
-        buf[19] = 0x56.toByte()
-        buf[20] = 0x78.toByte()
+        // Calculate genuine ISO/IEC 13818-1 MPEG-2 32-bit CRC (table bytes 5 to 16)
+        val patCrc = calculateMpeg2Crc32(buf, 5, 12)
+        buf[17] = ((patCrc shr 24) and 0xFF).toByte()
+        buf[18] = ((patCrc shr 16) and 0xFF).toByte()
+        buf[19] = ((patCrc shr 8) and 0xFF).toByte()
+        buf[20] = (patCrc and 0xFF).toByte()
     }
 
     private fun buildPmtPacket(buf: ByteArray, serviceId: Int, videoPid: Int, audioPid: Int, caid: Int, ecmPid: Int) {
@@ -720,11 +721,28 @@ class StreamDescramblerServer(
         buf[idx++] = 0xF0.toByte()
         buf[idx++] = 0x00.toByte()
 
-        // Dummy CRC32
-        buf[idx++] = 0xAB.toByte()
-        buf[idx++] = 0xCD.toByte()
-        buf[idx++] = 0xEF.toByte()
-        buf[idx] = 0x01.toByte()
+        // Calculate genuine ISO/IEC 13818-1 MPEG-2 32-bit CRC from table_id (idx 5) up to idx
+        val pmtCrc = calculateMpeg2Crc32(buf, 5, idx - 5)
+        buf[idx++] = ((pmtCrc shr 24) and 0xFF).toByte()
+        buf[idx++] = ((pmtCrc shr 16) and 0xFF).toByte()
+        buf[idx++] = ((pmtCrc shr 8) and 0xFF).toByte()
+        buf[idx] = (pmtCrc and 0xFF).toByte()
+    }
+
+    private fun calculateMpeg2Crc32(data: ByteArray, offset: Int, length: Int): Int {
+        var crc = 0xFFFFFFFF.toInt()
+        for (i in offset until (offset + length)) {
+            val b = data[i].toInt() and 0xFF
+            crc = crc xor (b shl 24)
+            for (bit in 0 until 8) {
+                crc = if ((crc and 0x80000000.toInt()) != 0) {
+                    (crc shl 1) xor 0x04C11DB7
+                } else {
+                    crc shl 1
+                }
+            }
+        }
+        return crc
     }
 
     private fun buildEcmPacket(buf: ByteArray, caid: Int, serviceId: Int) {

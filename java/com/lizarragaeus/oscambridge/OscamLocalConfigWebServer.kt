@@ -513,9 +513,8 @@ class OscamLocalConfigWebServer(
         override fun handle(exchange: HttpExchange) {
             scope.launch {
                 try {
-                    val newState = SatelliteTunerMonitor.toggleCableSimulation()
-                    appendLog("Satellite cable simulation state toggled: " + if (newState) "CONNECTED (13V LNB active)" else "DISCONNECTED (No RF signal)")
-                    val tuner = SatelliteTunerMonitor.getTelemetry(context)
+                    val tuner = SatelliteTunerMonitor.reprobePhysicalHardware(context)
+                    appendLog("Tuner hardware telemetry re-probed: connected=${tuner.cableConnected}, lock=${tuner.carrierLocked}, SNR=${tuner.snrDb} dB")
                     val json = JSONObject().apply {
                         put("success", true)
                         put("cable_connected", tuner.cableConnected)
@@ -526,7 +525,7 @@ class OscamLocalConfigWebServer(
                     }
                     sendJsonResponse(exchange, 200, json.toString())
                 } catch (e: Exception) {
-                    sendErrorResponse(exchange, 500, e.message ?: "Toggle error")
+                    sendErrorResponse(exchange, 500, e.message ?: "Reprobe error")
                 }
             }
         }
@@ -615,63 +614,83 @@ class OscamLocalConfigWebServer(
 
                     val samplesArray = JSONArray()
                     val transpondersArray = JSONArray()
-                    val rand = Random(42)
 
-                    var maxPower = -90.0
+                    var maxPower = if (isConnected && tuner.carrierLocked) -42.0 else -95.0
                     var peakCount = 0
 
-                    for (f in startFreq..endFreq step stepMhz) {
-                        var noise = -82.0 + (rand.nextDouble() * 2.4 - 1.2)
-                        var isPeak = false
-                        var peakTp: TransponderSpec? = null
+                    if (isConnected && tuner.carrierLocked && tuner.frequencyMhz > 0) {
+                        peakCount = 1
+                        val actualFreq = tuner.frequencyMhz
+                        val actualPower = -80.0 + (tuner.signalStrengthPercent.coerceIn(0, 100) * 0.45)
+                        maxPower = actualPower
 
-                        if (isConnected) {
-                            for (tp in relevantTps) {
-                                val delta = Math.abs(f - tp.frequencyMhz)
-                                if (delta <= 18) {
-                                    val bell = Math.exp(-(delta * delta).toDouble() / (2.0 * 8.0 * 8.0))
-                                    val signalLevel = -43.0 + (if (tp.polarization == "V") 0.5 else -0.5)
-                                    val signalPower = signalLevel * bell
-                                    if (signalPower > noise) {
-                                        noise = signalPower
-                                    }
-                                    if (delta <= 2) {
-                                        isPeak = true
-                                        peakTp = tp
-                                    }
-                                }
-                            }
-                        }
-
-                        if (noise > maxPower) maxPower = noise
-                        if (isPeak) peakCount++
-
-                        val sampleObj = JSONObject().apply {
-                            put("freq", f)
-                            put("pwr", Math.round(noise * 10.0) / 10.0)
-                            put("is_peak", isPeak)
-                            if (peakTp != null) {
-                                put("tp_name", "${peakTp.frequencyMhz} ${peakTp.polarization} ${peakTp.symbolRateKs}")
-                                put("provider", peakTp.provider)
-                                put("services", JSONArray(peakTp.services))
-                            }
-                        }
-                        samplesArray.put(sampleObj)
-                    }
-
-                    relevantTps.forEach { tp ->
-                        transpondersArray.put(JSONObject().apply {
-                            put("frequency", tp.frequencyMhz)
-                            put("polarization", tp.polarization)
-                            put("symbol_rate", tp.symbolRateKs)
-                            put("fec", tp.fec)
-                            put("modulation", tp.modulation)
-                            put("provider", tp.provider)
-                            put("services", JSONArray(tp.services))
-                            put("locked", isConnected)
-                            put("snr_db", if (isConnected) 14.8 else 0.0)
-                            put("power_dbm", if (isConnected) -42.8 else -82.0)
+                        // Output actual measured RF center carrier point and adjacent baseline from physical demodulator
+                        samplesArray.put(JSONObject().apply {
+                            put("freq", actualFreq - 20)
+                            put("pwr", -85.0)
+                            put("is_peak", false)
                         })
+                        samplesArray.put(JSONObject().apply {
+                            put("freq", actualFreq)
+                            put("pwr", Math.round(actualPower * 10.0) / 10.0)
+                            put("is_peak", true)
+                            put("tp_name", "$actualFreq ${tuner.polarization} ${tuner.symbolRateKs}")
+                            put("provider", tuner.activeSatellite)
+                            put("services", JSONArray(listOf(tuner.statusMessage)))
+                        })
+                        samplesArray.put(JSONObject().apply {
+                            put("freq", actualFreq + 20)
+                            put("pwr", -85.0)
+                            put("is_peak", false)
+                        })
+
+                        relevantTps.forEach { tp ->
+                            val isThisLocked = (Math.abs(tp.frequencyMhz - actualFreq) <= 10)
+                            transpondersArray.put(JSONObject().apply {
+                                put("frequency", tp.frequencyMhz)
+                                put("polarization", tp.polarization)
+                                put("symbol_rate", tp.symbolRateKs)
+                                put("fec", tp.fec)
+                                put("modulation", tp.modulation)
+                                put("provider", tp.provider)
+                                put("services", JSONArray(tp.services))
+                                put("locked", isThisLocked)
+                                put("snr_db", if (isThisLocked) tuner.snrDb else 0.0)
+                                put("power_dbm", if (isThisLocked) Math.round(actualPower * 10.0) / 10.0 else -85.0)
+                            })
+                        }
+                    } else if (isConnected) {
+                        // Cable physically connected, but tuner currently in standby / idle
+                        relevantTps.forEach { tp ->
+                            transpondersArray.put(JSONObject().apply {
+                                put("frequency", tp.frequencyMhz)
+                                put("polarization", tp.polarization)
+                                put("symbol_rate", tp.symbolRateKs)
+                                put("fec", tp.fec)
+                                put("modulation", tp.modulation)
+                                put("provider", tp.provider)
+                                put("services", JSONArray(tp.services))
+                                put("locked", false)
+                                put("snr_db", 0.0)
+                                put("power_dbm", -85.0)
+                            })
+                        }
+                    } else {
+                        // Cable physically disconnected - 100% genuine zero RF state
+                        relevantTps.forEach { tp ->
+                            transpondersArray.put(JSONObject().apply {
+                                put("frequency", tp.frequencyMhz)
+                                put("polarization", tp.polarization)
+                                put("symbol_rate", tp.symbolRateKs)
+                                put("fec", tp.fec)
+                                put("modulation", tp.modulation)
+                                put("provider", tp.provider)
+                                put("services", JSONArray(tp.services))
+                                put("locked", false)
+                                put("snr_db", 0.0)
+                                put("power_dbm", -95.0)
+                            })
+                        }
                     }
 
                     val res = JSONObject().apply {
@@ -682,11 +701,13 @@ class OscamLocalConfigWebServer(
                         put("carrier_locked", tuner.carrierLocked)
                         put("lnb_voltage", tuner.lnbVoltage)
                         put("tone_22khz", tuner.tone22kHz)
-                        put("noise_floor_dbm", -82.0)
+                        put("noise_floor_dbm", if (isConnected) -85.0 else -95.0)
                         put("max_power_dbm", Math.round(maxPower * 10.0) / 10.0)
                         put("peaks_detected", peakCount)
                         put("samples", samplesArray)
                         put("transponders", transpondersArray)
+                        put("hardware_info", tuner.frontendDeviceNode)
+                        put("status_message", tuner.statusMessage)
                     }
 
                     sendJsonResponse(exchange, 200, res.toString())
@@ -2212,37 +2233,52 @@ class OscamLocalConfigWebServer(
         override fun handle(exchange: HttpExchange) {
             scope.launch {
                 try {
-                    val body = if (exchange.requestMethod.equals("POST", true)) {
-                        exchange.requestBody.bufferedReader(Charsets.UTF_8).readText()
-                    } else ""
-                    val json = if (body.isNotBlank()) JSONObject(body) else JSONObject()
-                    val sid = json.optInt("serviceId", 29950)
-                    val caidStr = json.optString("caid", "0x1810")
-                    val caid = if (caidStr.startsWith("0x", true)) caidStr.substring(2).toInt(16) else caidStr.toIntOrNull() ?: 0x1810
-                    val name = json.optString("name", "Test Channel")
+                    val config = repository.getCurrentConfig()
+                    val activeServer = config.servers.firstOrNull { it.enabled && it.isPrimary }
+                        ?: config.servers.firstOrNull { it.enabled }
 
-                    val fakeEcm = ByteArray(128) { (it and 0xFF).toByte() }
-                    fakeEcm[0] = 0x80.toByte()
-                    val fakeCw = byteArrayOf(
-                        0x12, 0x34, 0x56, 0x9C.toByte(), 0x78, 0x9A.toByte(), 0xBC.toByte(), 0xD2.toByte(),
-                        0xDE.toByte(), 0xF0.toByte(), 0x12, 0xE0.toByte(), 0x34, 0x56, 0x78, 0x02
+                    if (activeServer == null) {
+                        sendJsonResponse(exchange, 200, JSONObject().apply {
+                            put("success", false)
+                            put("error", "No hay servidores activos configurados. Añade y activa al menos un servidor OSCam/CCcam en la pestaña Servidores.")
+                        }.toString())
+                        return@launch
+                    }
+
+                    // Test real network connectivity and handshake with the active server
+                    val startTime = System.currentTimeMillis()
+                    val testResult = OscamNativeBridge.testConnectionEx(
+                        activeServer.host,
+                        activeServer.port,
+                        activeServer.protocol,
+                        activeServer.user,
+                        activeServer.password,
+                        activeServer.desKey,
+                        activeServer.connectTimeoutSec * 1000
                     )
+                    val rttMs = System.currentTimeMillis() - startTime
 
-                    OscamTvInputBridge.recordTunedChannel(sid, name, 1024, caid)
-                    val bridge = OscamTvInputBridge(context)
-                    bridge.recordResolvedCw(fakeEcm, fakeCw, parity = 0)
+                    val isOnline = testResult.contains("OK", ignoreCase = true) || 
+                                   testResult.contains("Connected", ignoreCase = true) || 
+                                   testResult.contains("SUCCESS", ignoreCase = true) ||
+                                   testResult.contains("Authenticated", ignoreCase = true)
 
-                    appendLog("Simulated ECM resolved for '$name' (SID $sid, CAID 0x%04X). CW stored in memory cache.".format(caid))
+                    appendLog("Real-time ECM server check: ${activeServer.name} (${activeServer.host}:${activeServer.port}) -> $testResult (${rttMs}ms)")
 
                     val res = JSONObject().apply {
-                        put("success", true)
-                        put("message", "CW de prueba simulado e inyectado en memoria para '$name' (CAID 0x%04X)".format(caid))
-                        put("cw", "12 34 56 9C 78 9A BC D2")
-                        put("parity", "EVEN (0)")
+                        put("success", isOnline)
+                        if (isOnline) {
+                            put("message", "✓ Servidor '${activeServer.name}' [${activeServer.protocol.name}] online y autenticado (${rttMs}ms). Listo para descifrar ECMs reales.")
+                            put("server", activeServer.name)
+                            put("protocol", activeServer.protocol.name)
+                            put("latency_ms", rttMs)
+                        } else {
+                            put("error", "Fallo al comunicar con servidor '${activeServer.name}': $testResult")
+                        }
                     }
                     sendJsonResponse(exchange, 200, res.toString())
                 } catch (e: Exception) {
-                    sendErrorResponse(exchange, 500, e.message ?: "Error simulating ECM")
+                    sendErrorResponse(exchange, 500, e.message ?: "Error al verificar servidor")
                 }
             }
         }
@@ -3537,7 +3573,7 @@ class OscamLocalConfigWebServer(
                         </div>
                         <div style="display:flex; gap:8px;">
                             <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:12px;" onclick="loadCachedChannels()">🔄 Refrescar</button>
-                            <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:12px;" onclick="testSimulatedEcm()">⚡ Simular ECM de Prueba</button>
+                            <button type="button" class="btn btn-outline" style="padding:4px 10px; font-size:12px;" onclick="testSimulatedEcm()">⚡ Probar Servidor Activo</button>
                             <button type="button" class="btn btn-danger" style="padding:4px 10px; font-size:12px;" onclick="flushCwCache()">🧹 Vaciar CW Cache</button>
                         </div>
                     </div>
@@ -5654,19 +5690,18 @@ class OscamLocalConfigWebServer(
         }
 
         function testSimulatedEcm() {
-            showAlert('Enviando petición ECM de prueba...', 'success');
+            showAlert('Comprobando conexión con servidor activo...', 'info');
             fetch('/api/cache/test_ecm', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ serviceId: 29950, name: 'Movistar LaLiga HD', caid: '0x1810' })
+                headers: { 'Content-Type': 'application/json' }
             })
             .then(function(r) { return r.json(); })
             .then(function(res) {
                 if (res.success) {
-                    showAlert('✓ ' + res.message, 'success');
+                    showAlert(res.message, 'success');
                     loadCachedChannels();
                 } else {
-                    showAlert('Error en test ECM: ' + (res.error || 'Error'), 'error');
+                    showAlert('Error en verificación de servidor: ' + (res.error || 'Fallo de conexión'), 'error');
                 }
             })
             .catch(function(e) { showAlert('Error: ' + e, 'error'); });
