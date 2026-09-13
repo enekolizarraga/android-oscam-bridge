@@ -608,10 +608,6 @@ class OscamLocalConfigWebServer(
                         satMatch && polMatch
                     }
 
-                    val startFreq = 10700
-                    val endFreq = 12750
-                    val stepMhz = 4
-
                     val samplesArray = JSONArray()
                     val transpondersArray = JSONArray()
 

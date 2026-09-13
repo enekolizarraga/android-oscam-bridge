@@ -509,7 +509,10 @@ android-oscam-bridge/
 
 | Document | Purpose |
 |---|---|
-| [**`docs/TUTORIAL_COMPILACION_Y_CONFIGURACION.md`**](docs/TUTORIAL_COMPILACION_Y_CONFIGURACION.md) | **Guía completa en español**: Tutorial paso a paso para compilar (NDK/CMake/Gradle), instalar en Android TV, configurar todos los parámetros vía web (`:8080`), y funcionamiento del bypass inteligente para canales en abierto (FTA). |
+| [**`docs/MANUAL_USUARIO_INTERFAZ_WEB.md`**](docs/MANUAL_USUARIO_INTERFAZ_WEB.md) | **Manual de Usuario Completo**: Guía detallada de la consola web (`:8080`), gestión de parrilla de canales, sintonización, TVHeadend autónomo y reproductor web `mpegts.js`. |
+| [**`docs/DATOS_REALES_VS_MOCKS_AUDIT.md`**](docs/DATOS_REALES_VS_MOCKS_AUDIT.md) | **Auditoría de Datos 100% Reales**: Verificación técnica de telemetría de hardware (sysfs, `/dev/dvb`, Android HAL), cero datos mock, espectro RF y cálculo real de CRC32 MPEG-2. |
+| [**`docs/TVHEADEND_NO_ROOT_GUIDE.md`**](docs/TVHEADEND_NO_ROOT_GUIDE.md) | **Guía TVHeadend Sin Root**: Instrucciones para utilizar la app como servidor de streaming autónomo con clientes CCcam y OSCam embebidos sin modificar el sistema operativo del TV. |
+| [**`docs/TUTORIAL_COMPILACION_Y_CONFIGURACION.md`**](docs/TUTORIAL_COMPILACION_Y_CONFIGURACION.md) | **Guía de Compilación**: Tutorial paso a paso para compilar (NDK/CMake/Gradle), instalar en Android TV y configurar parámetros vía web (`:8080`). |
 | [**`docs/INSTALLATION_AND_CONFIGURATION.md`**](docs/INSTALLATION_AND_CONFIGURATION.md) | Comprehensive installation guide (Magisk, ADB, AOSP), compilation steps (4 methods), Web Console Pro guide, OSCam setup, and troubleshooting FAQ. |
 | [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md) | In-depth engineering design, MediaCas framework interaction, DVBAPI protocol internals, hardware key injection mechanics, and software DVB-CSA design. |
 | [**`proto/dvbapi_messages.md`**](proto/dvbapi_messages.md) | Detailed binary packet structures, opcodes, and sequence diagrams for OSCam network DVBAPI communication. |
