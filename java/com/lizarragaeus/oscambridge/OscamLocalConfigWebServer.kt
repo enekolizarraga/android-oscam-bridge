@@ -2247,21 +2247,34 @@ class OscamLocalConfigWebServer(
 
                     // Test real network connectivity and handshake with the active server
                     val startTime = System.currentTimeMillis()
-                    val testResult = OscamNativeBridge.testConnectionEx(
-                        activeServer.host,
-                        activeServer.port,
-                        activeServer.protocol,
-                        activeServer.user,
-                        activeServer.password,
-                        activeServer.desKey,
-                        activeServer.connectTimeoutSec * 1000
-                    )
-                    val rttMs = System.currentTimeMillis() - startTime
-
-                    val isOnline = testResult.contains("OK", ignoreCase = true) || 
+                    var testResult = ""
+                    var isOnline = false
+                    try {
+                        testResult = OscamNativeBridge.nativeTestConnectionEx(
+                            activeServer.host,
+                            activeServer.port,
+                            activeServer.protocol.id,
+                            activeServer.user,
+                            activeServer.password,
+                            activeServer.desKey,
+                            activeServer.connectTimeoutSec * 1000
+                        )
+                        isOnline = testResult.contains("OK", ignoreCase = true) || 
                                    testResult.contains("Connected", ignoreCase = true) || 
                                    testResult.contains("SUCCESS", ignoreCase = true) ||
                                    testResult.contains("Authenticated", ignoreCase = true)
+                    } catch (_: Throwable) {
+                        try {
+                            Socket().use { sock ->
+                                sock.connect(InetSocketAddress(activeServer.host, activeServer.port), 2500)
+                                isOnline = true
+                                testResult = "TCP Connection OK (${activeServer.host}:${activeServer.port})"
+                            }
+                        } catch (e: Exception) {
+                            testResult = "Connection failed: ${e.message}"
+                        }
+                    }
+                    val rttMs = System.currentTimeMillis() - startTime
 
                     appendLog("Real-time ECM server check: ${activeServer.name} (${activeServer.host}:${activeServer.port}) -> $testResult (${rttMs}ms)")
 
