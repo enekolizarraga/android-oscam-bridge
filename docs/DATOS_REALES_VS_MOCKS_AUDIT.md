@@ -149,3 +149,4 @@ Al realizar un escaneo de canales con la opción `source=tv`:
 ## 4. Conclusión
 
 El sistema opera con **transparencia y precisión técnica absoluta**. Cada métrica mostrada en la consola web, desde la señal satelital en decibelios hasta la latencia de los servidores de claves en milisegundos, proviene de mediciones directas sobre el hardware físico y la red de comunicaciones.
+

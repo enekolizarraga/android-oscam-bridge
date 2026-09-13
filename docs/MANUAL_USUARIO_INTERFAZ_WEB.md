@@ -172,3 +172,4 @@ En la pestaña **⚙️ Diagnóstico & Logs**:
 | El servidor muestra error de ping | Dirección IP, puerto o contraseña incorrectos. | Revisa las credenciales en la pestaña Servidores y pulsa *Ping Test* para diagnosticar el código de error devuelto. |
 | El reproductor web muestra pantalla negra | El canal seleccionado no tiene stream de vídeo activo o el navegador no soporta el códec. | Usa Google Chrome o Edge con aceleración por hardware activa, o pulsa el botón *🔗 VLC* para abrir el stream nativo en VLC. |
 | El contador de CW Cache permanece en 0 | El televisor está en un canal en abierto (FTA) o no se ha sintonizado ningún canal codificado. | Sintoniza un canal con acceso condicional (CAID `0x1810`, etc.) para iniciar el flujo de ECMs hacia la memoria RAM. |
+
