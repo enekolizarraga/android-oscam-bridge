@@ -2655,34 +2655,105 @@ class OscamLocalConfigWebServer(
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
     <style>
         :root {
-            --bg-main: #080B11;
-            --bg-surface: #111622;
-            --bg-card: #161D2C;
-            --bg-input: #0D121B;
-            --border: #242E42;
-            --border-hover: #3B4A68;
-            --primary: #3B82F6;
-            --primary-glow: rgba(59, 130, 246, 0.35);
+            --bg-main: #07090E;
+            --bg-surface: rgba(15, 23, 42, 0.88);
+            --bg-card: rgba(22, 32, 54, 0.72);
+            --bg-card-hover: rgba(30, 43, 72, 0.9);
+            --bg-input: rgba(10, 15, 28, 0.92);
+            --border: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(56, 189, 248, 0.45);
+            --border-focus: #38BDF8;
+            --primary: #38BDF8;
+            --primary-glow: rgba(56, 189, 248, 0.35);
             --success: #10B981;
             --success-glow: rgba(16, 185, 129, 0.3);
             --warning: #F59E0B;
+            --warning-glow: rgba(245, 158, 11, 0.3);
             --danger: #EF4444;
+            --danger-glow: rgba(239, 68, 68, 0.3);
             --accent: #8B5CF6;
             --accent-glow: rgba(139, 92, 246, 0.35);
-            --text-main: #F3F4F6;
+            --text-main: #F8FAFC;
             --text-muted: #94A3B8;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 7px; height: 7px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.25); }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 6px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(56, 189, 248, 0.4); }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background: var(--bg-main);
+            background: radial-gradient(circle at 50% 0%, #131E33 0%, #07090E 75%);
+            background-attachment: fixed;
             color: var(--text-main);
             padding: 24px 16px;
             display: flex;
             justify-content: center;
             min-height: 100vh;
+            line-height: 1.5;
         }
-        .wrapper { max-width: 1060px; width: 100%; }
+        .wrapper { max-width: 1100px; width: 100%; }
+
+        /* Skeleton Loading & Shimmer */
+        @keyframes shimmerAnim {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+        .skeleton {
+            background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.09) 50%, rgba(255,255,255,0.03) 75%);
+            background-size: 200% 100%;
+            animation: shimmerAnim 1.6s infinite linear;
+            border-radius: 6px;
+            display: inline-block;
+        }
+        .skeleton-text { height: 13px; margin: 4px 0; border-radius: 4px; }
+        .skeleton-box { height: 38px; border-radius: 8px; width: 100%; }
+        .skeleton-pill { height: 22px; width: 68px; border-radius: 9999px; }
+        .skeleton-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 18px;
+            margin-bottom: 14px;
+        }
+        .skeleton-table-row td {
+            padding: 14px 16px;
+        }
+
+        /* Floating Toast Container */
+        #toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast-card {
+            pointer-events: auto;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 18px;
+            box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 290px;
+            max-width: 440px;
+            animation: toastSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            backdrop-filter: blur(14px);
+            transition: opacity 0.25s, transform 0.25s;
+        }
+        .toast-card.success { border-color: rgba(16, 185, 129, 0.5); box-shadow: 0 8px 24px rgba(16, 185, 129, 0.2); }
+        .toast-card.error { border-color: rgba(239, 68, 68, 0.5); box-shadow: 0 8px 24px rgba(239, 68, 68, 0.2); }
+        .toast-card.info { border-color: rgba(56, 189, 248, 0.5); box-shadow: 0 8px 24px rgba(56, 189, 248, 0.2); }
+        @keyframes toastSlideIn { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
 
         /* Header */
         header {
@@ -2690,43 +2761,45 @@ class OscamLocalConfigWebServer(
             justify-content: space-between;
             align-items: center;
             margin-bottom: 24px;
-            padding-bottom: 18px;
+            padding-bottom: 20px;
             border-bottom: 1px solid var(--border);
             flex-wrap: wrap;
-            gap: 12px;
+            gap: 14px;
         }
         .brand { display: flex; align-items: center; gap: 14px; }
         .brand-icon {
-            width: 44px;
-            height: 44px;
-            border-radius: 12px;
+            width: 46px;
+            height: 46px;
+            border-radius: 14px;
             background: linear-gradient(135deg, var(--primary), var(--accent));
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 900;
-            font-size: 22px;
+            font-size: 24px;
             color: #FFF;
-            box-shadow: 0 0 20px var(--primary-glow);
+            box-shadow: 0 0 24px var(--primary-glow);
         }
-        .brand-title h1 { font-size: 22px; font-weight: 800; color: #FFF; letter-spacing: -0.4px; }
+        .brand-title h1 { font-size: 21px; font-weight: 800; color: #FFF; letter-spacing: -0.4px; }
         .brand-title p { font-size: 13px; color: var(--text-muted); margin-top: 3px; }
         
-        .header-actions { display: flex; align-items: center; gap: 10px; }
+        .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .status-badge {
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            padding: 7px 18px;
+            padding: 7px 16px;
             border-radius: 9999px;
             font-size: 12px;
             font-weight: 700;
             background: var(--bg-surface);
             border: 1px solid var(--border);
+            backdrop-filter: blur(8px);
+            transition: all 0.2s;
         }
         .status-dot {
-            width: 9px;
-            height: 9px;
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
             background: var(--warning);
             box-shadow: 0 0 10px currentColor;
@@ -2744,14 +2817,19 @@ class OscamLocalConfigWebServer(
         .metric-tile {
             background: var(--bg-surface);
             border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 16px 18px;
+            border-radius: 14px;
+            padding: 16px 20px;
             position: relative;
             overflow: hidden;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.25);
-            transition: transform 0.2s, border-color 0.2s;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+            backdrop-filter: blur(12px);
+            transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
         }
-        .metric-tile:hover { transform: translateY(-2px); border-color: var(--border-hover); }
+        .metric-tile:hover {
+            transform: translateY(-2px);
+            border-color: var(--border-hover);
+            box-shadow: 0 12px 30px rgba(0,0,0,0.45);
+        }
         .metric-tile::before {
             content: "";
             position: absolute;
@@ -2762,7 +2840,7 @@ class OscamLocalConfigWebServer(
             background: linear-gradient(90deg, var(--primary), var(--accent));
         }
         .metric-tag { font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 0.6px; }
-        .metric-value { font-size: 28px; font-weight: 800; color: #FFF; margin-top: 6px; }
+        .metric-value { font-size: 28px; font-weight: 800; color: #FFF; margin-top: 6px; letter-spacing: -0.5px; }
         .metric-sub { font-size: 12px; color: var(--success); margin-top: 4px; display: flex; align-items: center; gap: 4px; }
 
         /* Navigation Bar */
@@ -2771,27 +2849,47 @@ class OscamLocalConfigWebServer(
             gap: 6px;
             margin-bottom: 22px;
             border-bottom: 1px solid var(--border);
-            padding-bottom: 8px;
+            padding-bottom: 10px;
             overflow-x: auto;
             scrollbar-width: thin;
         }
         .tab-btn {
             background: none;
-            border: none;
+            border: 1px solid transparent;
             color: var(--text-muted);
-            padding: 10px 18px;
+            padding: 9px 16px;
             font-size: 13px;
             font-weight: 600;
             cursor: pointer;
-            border-radius: 8px;
+            border-radius: 10px;
             transition: all 0.2s;
             white-space: nowrap;
             display: inline-flex;
             align-items: center;
             gap: 6px;
         }
-        .tab-btn.active { color: #FFF; background: var(--bg-card); box-shadow: 0 2px 10px rgba(0,0,0,0.3); border: 1px solid var(--border); }
-        .tab-btn:hover:not(.active) { color: #FFF; background: rgba(255,255,255,0.04); }
+        .tab-btn.active {
+            color: #FFF;
+            background: var(--bg-card);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            border-color: var(--border-hover);
+        }
+        .tab-btn:hover:not(.active) { color: #FFF; background: rgba(255,255,255,0.05); }
+        .tab-badge {
+            background: rgba(255,255,255,0.08);
+            color: var(--text-muted);
+            padding: 1px 7px;
+            border-radius: 9999px;
+            font-size: 11px;
+            font-weight: 700;
+            font-family: monospace;
+            margin-left: 4px;
+            transition: all 0.2s;
+        }
+        .tab-btn.active .tab-badge {
+            background: var(--primary);
+            color: #000;
+        }
         .tab-pane { display: none; }
         .tab-pane.active { display: block; animation: fadeIn 0.2s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
@@ -2803,7 +2901,8 @@ class OscamLocalConfigWebServer(
             border-radius: 14px;
             padding: 24px;
             margin-bottom: 22px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+            backdrop-filter: blur(14px);
         }
         .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
         .panel-title { font-size: 17px; font-weight: 700; color: #FFF; letter-spacing: -0.2px; }
@@ -2821,8 +2920,9 @@ class OscamLocalConfigWebServer(
         .chart-box {
             background: var(--bg-card);
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 12px;
             padding: 16px;
+            backdrop-filter: blur(8px);
         }
         .chart-title { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; }
         svg.sparkline { width: 100%; height: 95px; overflow: visible; }
@@ -2831,12 +2931,16 @@ class OscamLocalConfigWebServer(
         .server-card, .hw-card {
             background: var(--bg-card);
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 12px;
             padding: 18px;
             margin-bottom: 14px;
-            transition: border-color 0.2s;
+            transition: all 0.2s;
+            backdrop-filter: blur(8px);
         }
-        .server-card:hover, .hw-card:hover { border-color: var(--border-hover); }
+        .server-card:hover, .hw-card:hover {
+            border-color: var(--border-hover);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
         .server-fields {
             display: grid;
             grid-template-columns: 2fr 1.5fr 2fr 1.2fr 1.5fr;
@@ -2856,13 +2960,16 @@ class OscamLocalConfigWebServer(
             border-radius: 8px;
             font-size: 13px;
             outline: none;
-            transition: border-color 0.2s;
+            transition: all 0.2s;
         }
-        input:focus, select:focus, textarea:focus { border-color: var(--primary); }
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--border-focus);
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
+        }
 
         /* Buttons */
         .btn {
-            padding: 10px 18px;
+            padding: 9px 16px;
             font-size: 13px;
             font-weight: 600;
             border-radius: 8px;
@@ -2873,27 +2980,47 @@ class OscamLocalConfigWebServer(
             align-items: center;
             gap: 8px;
             text-decoration: none;
+            user-select: none;
         }
-        .btn-primary { background: var(--primary); color: #FFF; }
-        .btn-primary:hover { background: #2563EB; box-shadow: 0 0 15px var(--primary-glow); }
+        .btn-primary { background: var(--primary); color: #000; font-weight: 700; }
+        .btn-primary:hover { background: #7DD3FC; box-shadow: 0 0 16px var(--primary-glow); transform: translateY(-1px); }
         .btn-success { background: var(--success); color: #FFF; }
-        .btn-success:hover { background: #059669; box-shadow: 0 0 15px var(--success-glow); }
+        .btn-success:hover { background: #059669; box-shadow: 0 0 16px var(--success-glow); transform: translateY(-1px); }
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-main); }
         .btn-outline:hover { background: rgba(255,255,255,0.06); border-color: var(--border-hover); }
         .btn-danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
         .btn-danger:hover { background: rgba(239, 68, 68, 0.3); }
         .btn-purple { background: var(--accent); color: #FFF; }
-        .btn-purple:hover { background: #7C3AED; }
+        .btn-purple:hover { background: #7C3AED; box-shadow: 0 0 16px var(--accent-glow); }
         .btn-warning { background: #D97706; color: #FFF; }
         .btn-warning:hover { background: #B45309; }
 
         /* Channel Table */
-        .table-container { width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; margin-top: 14px; }
+        .table-container {
+            width: 100%;
+            overflow-x: auto;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            margin-top: 14px;
+            background: var(--bg-card);
+        }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
-        th { background: var(--bg-card); padding: 12px 16px; font-weight: 700; color: var(--text-muted); border-bottom: 1px solid var(--border); text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+        th {
+            background: rgba(15, 23, 42, 0.95);
+            padding: 12px 16px;
+            font-weight: 700;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
         td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
         tr:last-child td { border-bottom: none; }
-        tr:hover td { background: rgba(255,255,255,0.02); }
+        tr:hover td { background: rgba(255,255,255,0.025); }
 
         /* Player & Channel Zapper Layout */
         .player-grid {
@@ -2908,11 +3035,12 @@ class OscamLocalConfigWebServer(
         .zapper-container {
             background: var(--bg-card);
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 12px;
             padding: 14px;
             max-height: 560px;
             display: flex;
             flex-direction: column;
+            backdrop-filter: blur(8px);
         }
         .zapper-list {
             overflow-y: auto;
@@ -2936,36 +3064,39 @@ class OscamLocalConfigWebServer(
         }
         .zapper-item:hover {
             border-color: var(--primary);
-            background: rgba(59, 130, 246, 0.1);
+            background: rgba(56, 189, 248, 0.1);
         }
         .zapper-item.active {
             border-color: var(--primary);
-            background: rgba(59, 130, 246, 0.2);
-            box-shadow: 0 0 12px rgba(59, 130, 246, 0.3);
+            background: rgba(56, 189, 248, 0.2);
+            box-shadow: 0 0 14px rgba(56, 189, 248, 0.35);
         }
 
         /* Modals */
         .modal-overlay {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.8);
-            backdrop-filter: blur(4px);
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(8px);
             display: none;
             justify-content: center;
             align-items: center;
             z-index: 1000;
             padding: 16px;
+            animation: modalFadeIn 0.2s ease-out;
         }
+        @keyframes modalFadeIn { from { opacity: 0; } to { opacity: 1; } }
         .modal-box {
             background: var(--bg-surface);
             border: 1px solid var(--border-hover);
-            border-radius: 12px;
+            border-radius: 14px;
             max-width: 620px;
             width: 100%;
             padding: 24px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.8);
+            box-shadow: 0 24px 60px rgba(0,0,0,0.9);
             max-height: 90vh;
             overflow-y: auto;
+            backdrop-filter: blur(16px);
         }
 
         /* Presets & Badges */
@@ -2981,7 +3112,7 @@ class OscamLocalConfigWebServer(
             color: var(--text-muted);
             user-select: none;
         }
-        .preset-badge:hover { color: #FFF; border-color: var(--primary); background: rgba(59, 130, 246, 0.1); }
+        .preset-badge:hover { color: #FFF; border-color: var(--primary); background: rgba(56, 189, 248, 0.1); }
         .preset-badge.badge-purple:hover { border-color: var(--accent); background: rgba(139, 92, 246, 0.1); }
         .preset-badge.badge-green:hover { border-color: var(--success); background: rgba(16, 185, 129, 0.1); }
         .preset-badge.badge-warning:hover { border-color: var(--warning); background: rgba(245, 158, 11, 0.1); }
@@ -3022,10 +3153,11 @@ class OscamLocalConfigWebServer(
         .player-box {
             background: #000;
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 12px;
             overflow: hidden;
             margin-top: 14px;
             position: relative;
+            box-shadow: 0 12px 36px rgba(0,0,0,0.7);
         }
         video { width: 100%; max-height: 380px; display: block; }
         code { background: var(--bg-card); padding: 4px 8px; border-radius: 6px; font-family: monospace; font-size: 12px; color: #93C5FD; }
@@ -3033,6 +3165,9 @@ class OscamLocalConfigWebServer(
     </style>
 </head>
 <body>
+    <!-- Floating Toast Notification Container -->
+    <div id="toast-container"></div>
+
     <div class="wrapper">
         <!-- Header -->
         <header>
@@ -3044,14 +3179,17 @@ class OscamLocalConfigWebServer(
                 </div>
             </div>
             <div class="header-actions">
-                <span class="status-badge" style="background:rgba(59,130,246,0.1); border-color:#3B82F6; color:#93C5FD;">
+                <span class="status-badge" style="background:rgba(56,189,248,0.1); border-color:rgba(56,189,248,0.3); color:#38BDF8;">
                     <span>📺 ${TclTvCompat.detectTvBrand()} TV (${hw.model})</span>
                 </span>
                 <span id="header-cable-badge" class="status-badge" style="background:${if (tuner.cableConnected) "rgba(16,185,129,0.15); border-color:#10B981; color:#10B981;" else "rgba(239,68,68,0.15); border-color:#EF4444; color:#EF4444;"}">
                     <span id="header-cable-dot" class="status-dot" style="background:${if (tuner.cableConnected) "#10B981" else "#EF4444"}; box-shadow:0 0 10px ${if (tuner.cableConnected) "#10B981" else "#EF4444"};"></span>
-                    <span id="header-cable-text">${if (tuner.cableConnected) "Satellite Cable: CONNECTED" else "Satellite Cable: DISCONNECTED"}</span>
+                    <span id="header-cable-text">${if (tuner.cableConnected) "Cable Sat: CONECTADO" else "Cable Sat: DESCONECTADO"}</span>
                 </span>
-                <button type="button" class="btn btn-outline" onclick="testAllServers()" title="Ping all configured servers">⚡ Ping All</button>
+                <span class="status-badge" id="header-tvh-badge" style="background:rgba(139,92,246,0.12); border-color:rgba(139,92,246,0.35); color:#C4B5FD;">
+                    <span>📡 TVH :9191</span>
+                </span>
+                <button type="button" class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="testAllServers()" title="Ping a todos los servidores">⚡ Ping All</button>
                 <div class="status-badge" id="pill-badge">
                     <span class="status-dot" id="pill-dot"></span>
                     <span id="pill-text">${status.name}</span>
@@ -3081,23 +3219,23 @@ class OscamLocalConfigWebServer(
             </div>
             <div class="metric-tile">
                 <div class="metric-tag">Active TV Chipset</div>
-                <div class="metric-value" style="font-size:18px; color:#A78BFA;">${hw.detectedChipset.split(" ")[0]}</div>
+                <div class="metric-value" style="font-size:22px; color:#C4B5FD;">${hw.detectedChipset.split(" ")[0]}</div>
                 <div class="metric-sub">Hardware CA: ${hw.socPlatform}</div>
             </div>
         </div>
 
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
-            <button class="tab-btn active" onclick="showTab('tab-dashboard', this)">📊 Dashboard &amp; Telemetry</button>
-            <button class="tab-btn" onclick="showTab('tab-servers', this)">📡 Servers &amp; Providers (CCcam / OSCam / Newcamd)</button>
-            <button class="tab-btn" onclick="showTab('tab-channels', this)">🛰️ Channels &amp; Transponders</button>
-            <button class="tab-btn" onclick="showTab('tab-tuner', this)">⚙️ Tuner &amp; CAID Presets</button>
-            <button class="tab-btn" onclick="showTab('tab-player', this)">📺 TVHeadend &amp; Reproductor Web</button>
-            <button class="tab-btn" onclick="showTab('tab-spectrum', this)">📶 Analizador de Espectro RF</button>
-            <button class="tab-btn" onclick="showTab('tab-diagnostics', this)">🔬 ECM Diagnostic Lab</button>
-            <button class="tab-btn" onclick="showTab('tab-hardware', this)">💻 TV System &amp; Providers</button>
-            <button class="tab-btn" onclick="showTab('tab-logs', this)">📜 Live Logcat</button>
-            <button class="tab-btn" onclick="showTab('tab-backup', this)">💾 Backup &amp; Restore</button>
+            <button class="tab-btn active" onclick="showTab('tab-dashboard', this)"><span>📊</span> Dashboard</button>
+            <button class="tab-btn" onclick="showTab('tab-servers', this)"><span>📡</span> Servidores <span class="tab-badge" id="tab-badge-servers">0</span></button>
+            <button class="tab-btn" onclick="showTab('tab-channels', this)"><span>🛰️</span> Canales <span class="tab-badge" id="tab-badge-channels">0</span></button>
+            <button class="tab-btn" onclick="showTab('tab-tuner', this)"><span>⚙️</span> Sintonizador</button>
+            <button class="tab-btn" onclick="showTab('tab-player', this)"><span>📺</span> Reproductor Web</button>
+            <button class="tab-btn" onclick="showTab('tab-spectrum', this)"><span>📶</span> Espectro RF</button>
+            <button class="tab-btn" onclick="showTab('tab-diagnostics', this)"><span>🔬</span> Lab ECM</button>
+            <button class="tab-btn" onclick="showTab('tab-hardware', this)"><span>💻</span> TV &amp; CI+</button>
+            <button class="tab-btn" onclick="showTab('tab-logs', this)"><span>📜</span> Logs</button>
+            <button class="tab-btn" onclick="showTab('tab-backup', this)"><span>💾</span> Respaldo</button>
         </div>
 
         <!-- TAB 1: Dashboard & Telemetry -->
@@ -4388,7 +4526,139 @@ class OscamLocalConfigWebServer(
             btn.classList.add('active');
         }
 
+        function renderServersSkeleton() {
+            var container = document.getElementById('server-list-box');
+            if (!container) return;
+            var skHtml = '';
+            for (var i = 0; i < 2; i++) {
+                skHtml += '<div class="skeleton-card">' +
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">' +
+                        '<div style="display:flex; align-items:center; gap:10px;">' +
+                            '<div class="skeleton skeleton-text" style="width:160px; height:18px;"></div>' +
+                            '<div class="skeleton skeleton-pill"></div>' +
+                        '</div>' +
+                        '<div class="skeleton skeleton-pill" style="width:90px;"></div>' +
+                    '</div>' +
+                    '<div class="server-fields">' +
+                        '<div><div class="skeleton skeleton-text" style="width:40px;"></div><div class="skeleton skeleton-box"></div></div>' +
+                        '<div><div class="skeleton skeleton-text" style="width:60px;"></div><div class="skeleton skeleton-box"></div></div>' +
+                        '<div><div class="skeleton skeleton-text" style="width:50px;"></div><div class="skeleton skeleton-box"></div></div>' +
+                        '<div><div class="skeleton skeleton-text" style="width:40px;"></div><div class="skeleton skeleton-box"></div></div>' +
+                        '<div><div class="skeleton skeleton-text" style="width:50px;"></div><div class="skeleton skeleton-box"></div></div>' +
+                    '</div>' +
+                '</div>';
+            }
+            container.innerHTML = skHtml;
+        }
+
+        function renderChannelsSkeleton() {
+            var tbody = document.getElementById('channels-tbody');
+            if (!tbody) return;
+            var rows = '';
+            for (var i = 0; i < 5; i++) {
+                rows += '<tr class="skeleton-table-row">' +
+                    '<td style="text-align:center;"><div class="skeleton" style="width:18px; height:18px; border-radius:4px;"></div></td>' +
+                    '<td style="text-align:center;"><div class="skeleton" style="width:36px; height:18px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:140px; height:16px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:90px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:120px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:80px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:60px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-pill"></div></td>' +
+                    '<td><div class="skeleton" style="width:110px; height:24px; border-radius:6px;"></div></td>' +
+                '</tr>';
+            }
+            tbody.innerHTML = rows;
+        }
+
+        function renderZapperSkeleton() {
+            var zList = document.getElementById('player-zapper-list');
+            if (!zList) return;
+            var sk = '';
+            for (var i = 0; i < 5; i++) {
+                sk += '<div style="background:rgba(0,0,0,0.25); border:1px solid rgba(255,255,255,0.04); border-radius:8px; padding:10px 12px; margin-bottom:6px;">' +
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">' +
+                        '<div style="display:flex; align-items:center; gap:8px;">' +
+                            '<div class="skeleton" style="width:22px; height:14px;"></div>' +
+                            '<div class="skeleton skeleton-text" style="width:130px; height:15px;"></div>' +
+                        '</div>' +
+                        '<div class="skeleton skeleton-pill" style="width:50px; height:18px;"></div>' +
+                    '</div>' +
+                    '<div style="display:flex; justify-content:space-between;">' +
+                        '<div class="skeleton skeleton-text" style="width:100px; height:11px;"></div>' +
+                        '<div class="skeleton skeleton-text" style="width:45px; height:11px;"></div>' +
+                    '</div>' +
+                '</div>';
+            }
+            zList.innerHTML = sk;
+        }
+
+        function renderCachedChannelsSkeleton() {
+            var tbody = document.getElementById('cached-channels-tbody');
+            if (!tbody) return;
+            var rows = '';
+            for (var i = 0; i < 4; i++) {
+                rows += '<tr class="skeleton-table-row">' +
+                    '<td><div class="skeleton skeleton-text" style="width:130px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:100px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:60px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-pill"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:40px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:40px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:140px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:50px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:55px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-pill"></div></td>' +
+                '</tr>';
+            }
+            tbody.innerHTML = rows;
+        }
+
+        function renderAvailableChannelsSkeleton() {
+            var tbody = document.getElementById('available-channels-tbody');
+            if (!tbody) return;
+            var rows = '';
+            for (var i = 0; i < 5; i++) {
+                rows += '<tr class="skeleton-table-row">' +
+                    '<td><div class="skeleton" style="width:16px; height:16px; border-radius:4px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:140px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:85px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:110px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:80px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:60px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-pill"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:70px;"></div></td>' +
+                    '<td><div class="skeleton" style="width:95px; height:24px; border-radius:6px;"></div></td>' +
+                '</tr>';
+            }
+            tbody.innerHTML = rows;
+        }
+
+        function renderSpectrumSkeleton() {
+            var tbody = document.getElementById('spec-transponders-tbody');
+            if (!tbody) return;
+            var rows = '';
+            for (var i = 0; i < 4; i++) {
+                rows += '<tr class="skeleton-table-row">' +
+                    '<td><div class="skeleton skeleton-text" style="width:80px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:30px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:70px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:110px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-pill"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:50px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:60px;"></div></td>' +
+                    '<td><div class="skeleton skeleton-text" style="width:140px;"></div></td>' +
+                    '<td><div class="skeleton" style="width:80px; height:24px; border-radius:6px;"></div></td>' +
+                '</tr>';
+            }
+            tbody.innerHTML = rows;
+        }
+
         function loadConfiguration() {
+            renderServersSkeleton();
+            renderChannelsSkeleton();
+            renderZapperSkeleton();
+
             fetch('/api/config')
                 .then(function(r) { return r.json(); })
                 .then(function(cfg) {
@@ -4431,6 +4701,8 @@ class OscamLocalConfigWebServer(
         }
 
         function renderServerCards(servers) {
+            var badge = document.getElementById('tab-badge-servers');
+            if (badge) badge.innerText = servers ? servers.length : 0;
             var container = document.getElementById('server-list-box');
             container.innerHTML = '';
             servers.forEach(function(s, idx) {
@@ -4852,6 +5124,8 @@ class OscamLocalConfigWebServer(
             }
             var countEl = document.getElementById('count-cfg-channels');
             if (countEl) countEl.innerText = currentConfiguredChannels.length;
+            var tabBadge = document.getElementById('tab-badge-channels');
+            if (tabBadge) tabBadge.innerText = currentConfiguredChannels.length;
 
             populatePlayerChannelDropdown(currentConfiguredChannels);
             renderPlayerChannelZapper(currentConfiguredChannels);
@@ -5331,6 +5605,7 @@ class OscamLocalConfigWebServer(
         }
 
         function loadCachedChannels() {
+            renderCachedChannelsSkeleton();
             fetch('/api/channels/cached')
                 .then(function(r) { return r.json(); })
                 .then(function(res) {
@@ -5400,6 +5675,7 @@ class OscamLocalConfigWebServer(
         var availableChannelsCache = [];
 
         function loadAvailableChannels() {
+            renderAvailableChannelsSkeleton();
             fetch('/api/channels/available')
                 .then(function(r) { return r.json(); })
                 .then(function(res) {
@@ -5865,6 +6141,7 @@ class OscamLocalConfigWebServer(
             var infoEl = document.getElementById('spec-chart-info');
             if (infoEl) infoEl.innerText = '⏳ Realizando barrido de radiofrecuencia en banda ' + sat.toUpperCase() + '...';
 
+            renderSpectrumSkeleton();
             fetch('/api/spectrum/scan?satellite=' + encodeURIComponent(sat) + '&polarization=' + encodeURIComponent(pol) + '&step=' + encodeURIComponent(step))
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
@@ -6340,11 +6617,31 @@ class OscamLocalConfigWebServer(
         }
 
         function showAlert(msg, type) {
+            type = type || 'info';
             var banner = document.getElementById('alert-banner');
-            banner.className = 'banner ' + type;
-            banner.innerText = msg;
-            banner.style.display = 'block';
-            setTimeout(function() { banner.style.display = 'none'; }, 4500);
+            if (banner) {
+                banner.className = 'banner ' + type;
+                banner.innerText = msg;
+                banner.style.display = 'block';
+                setTimeout(function() { banner.style.display = 'none'; }, 4500);
+            }
+
+            var container = document.getElementById('toast-container');
+            if (container) {
+                var toast = document.createElement('div');
+                toast.className = 'toast-card ' + type;
+                var icon = type === 'success' ? '✅' : (type === 'error' ? '❌' : 'ℹ️');
+                toast.innerHTML = '<span style="font-size:16px;">' + icon + '</span>' +
+                    '<div style="flex:1; font-size:13px; font-weight:600; color:#F8FAFC; line-height:1.4;">' + msg + '</div>';
+                container.appendChild(toast);
+                setTimeout(function() {
+                    toast.style.opacity = '0';
+                    toast.style.transform = 'translateX(20px)';
+                    setTimeout(function() {
+                        if (toast.parentNode) toast.parentNode.removeChild(toast);
+                    }, 260);
+                }, 4000);
+            }
         }
 
         function copyToClipboard(text) {

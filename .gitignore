@@ -127,6 +127,7 @@ core
 core.*
 vgcore.*
 scratch_*.py
+private/
 
 # ------------------------------------------------------------------------------
 # Operating System Temporary Files
