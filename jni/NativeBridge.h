@@ -69,6 +69,14 @@ public:
                       const std::string& desKey, const std::vector<uint16_t>& supportedCaids);
 
     /**
+     * @brief Full initialization with protocol versioning (CCcam version/build) and credentials.
+     */
+    bool initializeFull(const std::string& host, uint16_t port, uint8_t protocol,
+                        const std::string& user, const std::string& password,
+                        const std::string& desKey, const std::string& cccamVersion,
+                        const std::string& cccamBuild, const std::vector<uint16_t>& supportedCaids);
+
+    /**
      * @brief Starts the background connection manager thread.
      */
     bool start();
@@ -89,6 +97,14 @@ public:
     bool testConnectionEx(const std::string& host, uint16_t port, uint8_t protocol,
                           const std::string& user, const std::string& password,
                           const std::string& desKey, int32_t timeoutMs, std::string& outResult);
+
+    /**
+     * @brief Full test for specific protocol with version negotiation credentials.
+     */
+    bool testConnectionFull(const std::string& host, uint16_t port, uint8_t protocol,
+                            const std::string& user, const std::string& password,
+                            const std::string& desKey, const std::string& cccamVersion,
+                            const std::string& cccamBuild, int32_t timeoutMs, std::string& outResult);
 
     /**
      * @brief Queries WebIF API status from OSCam.
@@ -162,6 +178,8 @@ private:
     std::string user_{"android_tv"};
     std::string password_{"android_tv"};
     std::string desKey_{"0102030405060708091011121314"};
+    std::string cccamVersion_{"2.3.0"};
+    std::string cccamBuild_{"3367"};
     std::vector<uint16_t> supportedCaids_;
 
     std::shared_ptr<OscamConnectionManager> connManager_;

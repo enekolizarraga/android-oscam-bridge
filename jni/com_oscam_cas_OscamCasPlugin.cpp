@@ -58,6 +58,13 @@ bool NativeBridge::initialize(const std::string& host, uint16_t port, const std:
 bool NativeBridge::initializeEx(const std::string& host, uint16_t port, uint8_t protocol,
                                const std::string& user, const std::string& password,
                                const std::string& desKey, const std::vector<uint16_t>& supportedCaids) {
+    return initializeFull(host, port, protocol, user, password, desKey, "2.3.0", "3367", supportedCaids);
+}
+
+bool NativeBridge::initializeFull(const std::string& host, uint16_t port, uint8_t protocol,
+                                 const std::string& user, const std::string& password,
+                                 const std::string& desKey, const std::string& cccamVersion,
+                                 const std::string& cccamBuild, const std::vector<uint16_t>& supportedCaids) {
     std::lock_guard<std::mutex> lock(mutex_);
     host_ = host;
     port_ = port;
@@ -65,10 +72,12 @@ bool NativeBridge::initializeEx(const std::string& host, uint16_t port, uint8_t 
     user_ = user;
     password_ = password;
     desKey_ = desKey;
+    cccamVersion_ = cccamVersion.empty() ? "2.3.0" : cccamVersion;
+    cccamBuild_ = cccamBuild.empty() ? "3367" : cccamBuild;
     supportedCaids_ = supportedCaids;
 
-    BRIDGE_LOGI("NativeBridge::initializeEx -> Host: %s, Port: %u, Proto: %u, CAIDs: %zu",
-                host.c_str(), port, protocol, supportedCaids.size());
+    BRIDGE_LOGI("NativeBridge::initializeFull -> Host: %s, Port: %u, Proto: %u, CCcam Ver: %s (%s), CAIDs: %zu",
+                host.c_str(), port, protocol, cccamVersion_.c_str(), cccamBuild_.c_str(), supportedCaids.size());
 
     OscamClientCallbacks cbs;
     cbs.onConnectionChanged = [this](bool connected) {
@@ -117,6 +126,8 @@ bool NativeBridge::initializeEx(const std::string& host, uint16_t port, uint8_t 
     profile.user = user_;
     profile.password = password_;
     profile.desKey = desKey_;
+    profile.cccamVersion = cccamVersion_;
+    profile.cccamBuild = cccamBuild_;
     profile.caid = supportedCaids_.empty() ? 0x1810 : supportedCaids_[0];
     profile.enabled = true;
     profile.isPrimary = true;
@@ -160,6 +171,13 @@ bool NativeBridge::testConnection(const std::string& host, uint16_t port, int32_
 bool NativeBridge::testConnectionEx(const std::string& host, uint16_t port, uint8_t protocol,
                                    const std::string& user, const std::string& password,
                                    const std::string& desKey, int32_t timeoutMs, std::string& outResult) {
+    return testConnectionFull(host, port, protocol, user, password, desKey, "2.3.0", "3367", timeoutMs, outResult);
+}
+
+bool NativeBridge::testConnectionFull(const std::string& host, uint16_t port, uint8_t protocol,
+                                     const std::string& user, const std::string& password,
+                                     const std::string& desKey, const std::string& cccamVersion,
+                                     const std::string& cccamBuild, int32_t timeoutMs, std::string& outResult) {
     ServerProfile profile;
     profile.host = host;
     profile.port = port;
@@ -167,6 +185,8 @@ bool NativeBridge::testConnectionEx(const std::string& host, uint16_t port, uint
     profile.user = user;
     profile.password = password;
     profile.desKey = desKey;
+    profile.cccamVersion = cccamVersion.empty() ? "2.3.0" : cccamVersion;
+    profile.cccamBuild = cccamBuild.empty() ? "3367" : cccamBuild;
 
     bool ok = OscamConnectionManager::testServer(profile, timeoutMs, outResult);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -420,8 +440,39 @@ static jboolean impl_nativeTestConnection(JNIEnv* env, jstring host, jint port, 
     return oscam::jni::NativeBridge::getInstance().testConnection(hostStr, static_cast<uint16_t>(port), timeoutMs) ? JNI_TRUE : JNI_FALSE;
 }
 
-static jstring impl_nativeTestConnectionEx(JNIEnv* env, jstring host, jint port, jint protocol,
-                                          jstring user, jstring password, jstring desKey, jint timeoutMs) {
+static jboolean impl_nativeInitFull(JNIEnv* env, jstring host, jint port, jint protocol,
+                                   jstring user, jstring password, jstring desKey,
+                                   jstring cccamVersion, jstring cccamBuild, jintArray caids) {
+    if (!host) return JNI_FALSE;
+    const char* hChars = env->GetStringUTFChars(host, nullptr);
+    std::string hostStr(hChars);
+    env->ReleaseStringUTFChars(host, hChars);
+
+    std::string userStr = user ? env->GetStringUTFChars(user, nullptr) : "android_tv";
+    std::string passStr = password ? env->GetStringUTFChars(password, nullptr) : "android_tv";
+    std::string desStr  = desKey ? env->GetStringUTFChars(desKey, nullptr) : "0102030405060708091011121314";
+    std::string verStr  = cccamVersion ? env->GetStringUTFChars(cccamVersion, nullptr) : "2.3.0";
+    std::string bldStr  = cccamBuild ? env->GetStringUTFChars(cccamBuild, nullptr) : "3367";
+
+    std::vector<uint16_t> caidVec;
+    if (caids) {
+        jsize len = env->GetArrayLength(caids);
+        jint* body = env->GetIntArrayElements(caids, nullptr);
+        if (body) {
+            for (jsize i = 0; i < len; ++i) caidVec.push_back(static_cast<uint16_t>(body[i]));
+            env->ReleaseIntArrayElements(caids, body, JNI_ABORT);
+        }
+    }
+
+    bool ok = oscam::jni::NativeBridge::getInstance().initializeFull(
+        hostStr, static_cast<uint16_t>(port), static_cast<uint8_t>(protocol),
+        userStr, passStr, desStr, verStr, bldStr, caidVec);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+static jstring impl_nativeTestConnectionFull(JNIEnv* env, jstring host, jint port, jint protocol,
+                                            jstring user, jstring password, jstring desKey,
+                                            jstring cccamVersion, jstring cccamBuild, jint timeoutMs) {
     if (!host) return env->NewStringUTF("Host is null");
     const char* h = env->GetStringUTFChars(host, nullptr);
     std::string hostStr(h);
@@ -430,12 +481,19 @@ static jstring impl_nativeTestConnectionEx(JNIEnv* env, jstring host, jint port,
     std::string userStr = user ? env->GetStringUTFChars(user, nullptr) : "";
     std::string passStr = password ? env->GetStringUTFChars(password, nullptr) : "";
     std::string desStr  = desKey ? env->GetStringUTFChars(desKey, nullptr) : "";
+    std::string verStr  = cccamVersion ? env->GetStringUTFChars(cccamVersion, nullptr) : "2.3.0";
+    std::string bldStr  = cccamBuild ? env->GetStringUTFChars(cccamBuild, nullptr) : "3367";
 
     std::string result;
-    oscam::jni::NativeBridge::getInstance().testConnectionEx(
+    oscam::jni::NativeBridge::getInstance().testConnectionFull(
         hostStr, static_cast<uint16_t>(port), static_cast<uint8_t>(protocol),
-        userStr, passStr, desStr, timeoutMs, result);
+        userStr, passStr, desStr, verStr, bldStr, timeoutMs, result);
     return env->NewStringUTF(result.c_str());
+}
+
+static jstring impl_nativeTestConnectionEx(JNIEnv* env, jstring host, jint port, jint protocol,
+                                          jstring user, jstring password, jstring desKey, jint timeoutMs) {
+    return impl_nativeTestConnectionFull(env, host, port, protocol, user, password, desKey, nullptr, nullptr, timeoutMs);
 }
 
 static jstring impl_nativeQueryWebIfStatus(JNIEnv* env, jstring host, jint port, jstring user, jstring password) {
@@ -549,6 +607,13 @@ Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeInitEx(
 }
 
 JNIEXPORT jboolean JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeInitFull(
+    JNIEnv* env, jobject /*thiz*/, jstring host, jint port, jint protocol,
+    jstring user, jstring password, jstring desKey, jstring cccamVersion, jstring cccamBuild, jintArray caids) {
+    return impl_nativeInitFull(env, host, port, protocol, user, password, desKey, cccamVersion, cccamBuild, caids);
+}
+
+JNIEXPORT jboolean JNICALL
 Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeStart(JNIEnv* /*env*/, jobject /*thiz*/) {
     return impl_nativeStart();
 }
@@ -574,6 +639,13 @@ Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeTestConnectionEx(
     JNIEnv* env, jobject /*thiz*/, jstring host, jint port, jint protocol,
     jstring user, jstring password, jstring desKey, jint timeoutMs) {
     return impl_nativeTestConnectionEx(env, host, port, protocol, user, password, desKey, timeoutMs);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeTestConnectionFull(
+    JNIEnv* env, jobject /*thiz*/, jstring host, jint port, jint protocol,
+    jstring user, jstring password, jstring desKey, jstring cccamVersion, jstring cccamBuild, jint timeoutMs) {
+    return impl_nativeTestConnectionFull(env, host, port, protocol, user, password, desKey, cccamVersion, cccamBuild, timeoutMs);
 }
 
 JNIEXPORT jstring JNICALL
@@ -649,6 +721,13 @@ Java_com_oscam_cas_OscamNativeBridge_nativeInitEx(
 }
 
 JNIEXPORT jboolean JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeInitFull(
+    JNIEnv* env, jobject thiz, jstring host, jint port, jint protocol,
+    jstring user, jstring password, jstring desKey, jstring cccamVersion, jstring cccamBuild, jintArray caids) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeInitFull(env, thiz, host, port, protocol, user, password, desKey, cccamVersion, cccamBuild, caids);
+}
+
+JNIEXPORT jboolean JNICALL
 Java_com_oscam_cas_OscamNativeBridge_nativeStart(JNIEnv* env, jobject thiz) {
     return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeStart(env, thiz);
 }
@@ -674,6 +753,13 @@ Java_com_oscam_cas_OscamNativeBridge_nativeTestConnectionEx(
     JNIEnv* env, jobject thiz, jstring host, jint port, jint protocol,
     jstring user, jstring password, jstring desKey, jint timeoutMs) {
     return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeTestConnectionEx(env, thiz, host, port, protocol, user, password, desKey, timeoutMs);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_oscam_cas_OscamNativeBridge_nativeTestConnectionFull(
+    JNIEnv* env, jobject thiz, jstring host, jint port, jint protocol,
+    jstring user, jstring password, jstring desKey, jstring cccamVersion, jstring cccamBuild, jint timeoutMs) {
+    return Java_com_lizarragaeus_oscambridge_OscamNativeBridge_nativeTestConnectionFull(env, thiz, host, port, protocol, user, password, desKey, cccamVersion, cccamBuild, timeoutMs);
 }
 
 JNIEXPORT jstring JNICALL

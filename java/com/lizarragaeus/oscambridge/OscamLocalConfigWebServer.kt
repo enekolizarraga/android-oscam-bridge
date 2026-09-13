@@ -901,6 +901,8 @@ class OscamLocalConfigWebServer(
                                 put("user", s.user)
                                 put("password", s.password)
                                 put("des_key", s.desKey)
+                                put("cccam_version", s.cccamVersion)
+                                put("cccam_build", s.cccamBuild)
                                 put("caid", "0x%04X".format(s.caid))
                                 put("connect_timeout_sec", s.connectTimeoutSec)
                                 put("recv_timeout_sec", s.recvTimeoutSec)
@@ -997,6 +999,8 @@ class OscamLocalConfigWebServer(
                             val user = sObj.optString("user", existing?.user ?: "android_tv").trim()
                             val password = sObj.optString("password", existing?.password ?: "android_tv").trim()
                             val desKey = sObj.optString("des_key", existing?.desKey ?: "0102030405060708091011121314").trim()
+                            val cccamVersion = sObj.optString("cccam_version", existing?.cccamVersion ?: "2.3.0").trim()
+                            val cccamBuild = sObj.optString("cccam_build", existing?.cccamBuild ?: "3367").trim()
                             val caid = if (sObj.has("caid")) parseHexOrDec(sObj.optString("caid")) else (existing?.caid ?: 0x1810)
                             val connectTimeout = sObj.optInt("connect_timeout_sec", existing?.connectTimeoutSec ?: 4)
                             val recvTimeout = sObj.optInt("recv_timeout_sec", existing?.recvTimeoutSec ?: 8)
@@ -1014,6 +1018,8 @@ class OscamLocalConfigWebServer(
                                     user = user,
                                     password = password,
                                     desKey = desKey,
+                                    cccamVersion = cccamVersion,
+                                    cccamBuild = cccamBuild,
                                     caid = caid,
                                     connectTimeoutSec = connectTimeout,
                                     recvTimeoutSec = recvTimeout,
@@ -1032,6 +1038,8 @@ class OscamLocalConfigWebServer(
                         val user = json.optString("user", json.optString("username", currentConfig.primaryServer.user)).trim()
                         val password = json.optString("password", currentConfig.primaryServer.password).trim()
                         val desKey = json.optString("des_key", currentConfig.primaryServer.desKey).trim()
+                        val cccamVersion = json.optString("cccam_version", currentConfig.primaryServer.cccamVersion).trim()
+                        val cccamBuild = json.optString("cccam_build", currentConfig.primaryServer.cccamBuild).trim()
                         val caid = if (json.has("caid")) parseHexOrDec(json.optString("caid")) else currentConfig.primaryServer.caid
 
                         val updatedPrimary = currentConfig.primaryServer.copy(
@@ -1041,6 +1049,8 @@ class OscamLocalConfigWebServer(
                             user = user,
                             password = password,
                             desKey = desKey,
+                            cccamVersion = cccamVersion,
+                            cccamBuild = cccamBuild,
                             caid = caid,
                             enabled = json.optBoolean("enabled", true),
                             isPrimary = true
@@ -1150,9 +1160,11 @@ class OscamLocalConfigWebServer(
                 val user = json.optString("user", "android_tv").trim()
                 val password = json.optString("password", "android_tv").trim()
                 val desKey = json.optString("des_key", "0102030405060708091011121314").trim()
+                val cccamVersion = json.optString("cccam_version", "2.3.0").trim()
+                val cccamBuild = json.optString("cccam_build", "3367").trim()
 
                 val parsedProto = ServerProtocol.fromString(protoStr)
-                appendLog("Ping test: ${parsedProto.name} → $host:$port (user: $user)")
+                appendLog("Ping test: ${parsedProto.name} → $host:$port (user: $user, ver: $cccamVersion b$cccamBuild)")
                 val startTime = System.currentTimeMillis()
 
                 var ok = false
@@ -1162,8 +1174,8 @@ class OscamLocalConfigWebServer(
                 // 1. Optional native protocol-level probe (best-effort)
                 if (parsedProto != ServerProtocol.DVBAPI_UNIX) {
                     try {
-                        val testRes = OscamNativeBridge.nativeTestConnectionEx(
-                            host, port, parsedProto.id, user, password, desKey, 2500
+                        val testRes = OscamNativeBridge.nativeTestConnectionFull(
+                            host, port, parsedProto.id, user, password, desKey, cccamVersion, cccamBuild, 2500
                         )
                         if (testRes.isNotEmpty()) {
                             protocolDetail = testRes
@@ -1178,7 +1190,7 @@ class OscamLocalConfigWebServer(
 
                 // 2. Protocol-specific Kotlin fallback probe (when native .so unavailable)
                 if (!ok) {
-                    val result = testProtocol(parsedProto, host, port, user, password, desKey, 3000)
+                    val result = testProtocol(parsedProto, host, port, user, password, desKey, cccamVersion, cccamBuild, 3000)
                     ok = result.first
                     if (result.second.isNotEmpty()) {
                         if (ok) protocolDetail = result.second else err = result.second
@@ -1210,7 +1222,9 @@ class OscamLocalConfigWebServer(
          */
         private fun testProtocol(
             proto: ServerProtocol, host: String, port: Int,
-            user: String, password: String, desKey: String, timeoutMs: Int
+            user: String, password: String, desKey: String,
+            cccamVersion: String = "2.3.0", cccamBuild: String = "3367",
+            timeoutMs: Int
         ): Pair<Boolean, String> = when (proto) {
 
             ServerProtocol.DVBAPI_UNIX -> {
@@ -1235,8 +1249,8 @@ class OscamLocalConfigWebServer(
             }
 
             ServerProtocol.CCCAM -> {
-                // CCcam v2.3.0 — SHA1 + RC4 challenge-response + credential login
-                testCCcam(host, port, user, password, timeoutMs)
+                // CCcam — SHA1 + RC4 challenge-response + credential login with selected version
+                testCCcam(host, port, user, password, cccamVersion, cccamBuild, timeoutMs)
             }
 
             ServerProtocol.NEWCAMD -> {
@@ -1287,7 +1301,10 @@ class OscamLocalConfigWebServer(
         }
 
         // ── CCcam Handshake (v2.x / OSCam module-cccam.c specification) ─────
-        private fun testCCcam(host: String, port: Int, user: String, password: String, timeoutMs: Int): Pair<Boolean, String> {
+        private fun testCCcam(
+            host: String, port: Int, user: String, password: String,
+            version: String = "2.3.0", build: String = "3367", timeoutMs: Int
+        ): Pair<Boolean, String> {
             return try {
                 val sock = Socket()
                 sock.connect(InetSocketAddress(host, port), timeoutMs)
@@ -1361,10 +1378,12 @@ class OscamLocalConfigWebServer(
                 val nodeId = ByteArray(8).also { java.util.Random().nextBytes(it) }
                 System.arraycopy(nodeId, 0, cliData, 20, 8)
                 cliData[28] = 0 // want_emu = 0
-                val ver = "2.3.0".toByteArray(Charsets.US_ASCII)
+                val verStr = version.ifEmpty { "2.3.0" }
+                val bldStr = build.ifEmpty { "3367" }
+                val ver = verStr.toByteArray(Charsets.US_ASCII)
                 System.arraycopy(ver, 0, cliData, 29, minOf(ver.size, 32))
-                val build = "3367".toByteArray(Charsets.US_ASCII)
-                System.arraycopy(build, 0, cliData, 61, minOf(build.size, 32))
+                val buildBytes = bldStr.toByteArray(Charsets.US_ASCII)
+                System.arraycopy(buildBytes, 0, cliData, 61, minOf(buildBytes.size, 32))
 
                 val netMsg = ByteArray(4 + 93)
                 netMsg[0] = 0 // flag
@@ -1376,7 +1395,7 @@ class OscamLocalConfigWebServer(
                 outs.flush()
 
                 sock.close()
-                Pair(true, "CCcam login OK (Authenticated as '$user')")
+                Pair(true, "CCcam login OK (v$verStr b$bldStr - Authenticated as '$user')")
             } catch (e: Exception) {
                 Pair(false, "CCcam: ${e.message ?: "auth failed"}")
             }
@@ -3402,6 +3421,7 @@ class OscamLocalConfigWebServer(
                         <div class="panel-desc">Manage CCcam, OSCam (TCP &amp; UNIX Socket), Newcamd, Camd35 (cs378x), Radegast &amp; WebIF connections directly from this web page. All credentials, ports, and parameters are fully configurable.</div>
                     </div>
                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button type="button" class="btn" style="background:linear-gradient(135deg, #F59E0B, #D97706); color:#fff; font-weight:700; box-shadow:0 0 12px rgba(245,158,11,0.25);" onclick="openClineImportModal()">📋 Pegar Cline (C:)</button>
                         <button type="button" class="btn btn-warning" onclick="addServerCard('CCCAM')">+ Add CCcam</button>
                         <button type="button" class="btn btn-primary" onclick="addServerCard('DVBAPI')">+ Add OSCam (TCP)</button>
                         <button type="button" class="btn btn-primary" style="background:#0284C7; border-color:#0284C7;" onclick="addServerCard('DVBAPI_UNIX')">+ Add DVBAPI (UNIX)</button>
@@ -4612,6 +4632,37 @@ class OscamLocalConfigWebServer(
         </div>
     </div>
 
+    <!-- Modal: Pegar e Importar Clines (CCcam C: lines) -->
+    <div class="modal-overlay" id="modal-cline-import">
+        <div class="modal-box" style="max-width:640px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <div style="font-weight:800; font-size:16px; color:#F59E0B; display:flex; align-items:center; gap:8px;">
+                    <span>📋</span> Importar Clines de CCcam (C-lines)
+                </div>
+                <button type="button" class="btn btn-outline" style="padding:2px 8px; font-size:14px;" onclick="closeClineImportModal()">✕</button>
+            </div>
+            <p style="font-size:12px; color:var(--text-muted); margin-bottom:12px; line-height:1.5;">
+                Pega una o varias líneas de CCcam (formato <code>C: host puerto usuario contraseña [versión [build]]</code> o con CAIDs <code>{ 1810:000000 }</code>). Serán añadidas a la matriz con su protocolo, puerto y credenciales automáticamente.
+            </p>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:11px; color:#94A3B8; font-weight:700;">Versión CCcam por defecto para las clines importadas:</label>
+                <select id="cline-default-version" style="width:100%; margin-top:4px;">
+                    <option value="2.3.8">CCcam 2.3.8 (Build 4200 - Enigma2/OSCam Moderno)</option>
+                    <option value="2.3.2">CCcam 2.3.2 (Build 4000 - Enigma2 Estándar)</option>
+                    <option value="2.3.0" selected>CCcam 2.3.0 (Build 3367 - Estándar Recomendado)</option>
+                    <option value="2.2.1">CCcam 2.2.1 (Build 3316 - Máxima Compatibilidad)</option>
+                    <option value="2.1.4">CCcam 2.1.4 (Build 3191 - Ultra-Estable Clásico)</option>
+                    <option value="2.0.11">CCcam 2.0.11 (Build 2892 - Servidores Antiguos)</option>
+                </select>
+            </div>
+            <textarea id="cline-textarea" rows="6" placeholder="C: myserver.sat.net 12000 usuario123 clave456&#10;C: 192.168.1.100 12000 user2 pass2 yes { 0100:000068, 1810:000000 }" style="width:100%; font-family:monospace; font-size:12px; margin-bottom:14px; padding:10px; background:rgba(0,0,0,0.3); border:1px solid var(--border); border-radius:8px; color:#F8FAFC;"></textarea>
+            <div style="display:flex; justify-content:flex-end; gap:10px;">
+                <button type="button" class="btn btn-outline" onclick="closeClineImportModal()">Cancelar</button>
+                <button type="button" class="btn btn-warning" onclick="parseAndImportClines()">⚡ Importar Clines</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         var latencyHistory = [];
         var ecmHistory = [];
@@ -4849,6 +4900,23 @@ class OscamLocalConfigWebServer(
                         '<div class="srv-des-div-' + idx + '" style="display:' + (proto === 'NEWCAMD' ? 'block' : 'none') + ';"><label>DES Key (14 bytes hex)</label><input type="text" class="srv-des" value="' + (s.des_key || '0102030405060708091011121314') + '"></div>' +
                         '<div><label>Target CAID</label><input type="text" class="srv-caid" value="' + (s.caid || '0x1810') + '"></div>' +
                     '</div>' +
+                    '<div class="srv-cccam-row-' + idx + '" style="margin-top:12px; display:' + (proto === 'CCCAM' ? 'grid' : 'none') + '; grid-template-columns: 1.6fr 1fr; gap:12px; background:rgba(245,158,11,0.06); padding:10px 14px; border-radius:8px; border:1px solid rgba(245,158,11,0.25);">' +
+                        '<div><label style="font-size:11px; color:#F59E0B; font-weight:700;">CCcam Protocol Version</label>' +
+                            '<select class="srv-cccam-ver" onchange="onCccamVerChange(' + idx + ')">' +
+                                '<option value="2.3.8"' + ((s.cccam_version === '2.3.8') ? ' selected' : '') + '>CCcam 2.3.8 (Build 4200 - Enigma2/OSCam)</option>' +
+                                '<option value="2.3.2"' + ((s.cccam_version === '2.3.2') ? ' selected' : '') + '>CCcam 2.3.2 (Build 4000 - Enigma2)</option>' +
+                                '<option value="2.3.0"' + ((!s.cccam_version || s.cccam_version === '2.3.0') ? ' selected' : '') + '>CCcam 2.3.0 (Build 3367 - Standard)</option>' +
+                                '<option value="2.2.1"' + ((s.cccam_version === '2.2.1') ? ' selected' : '') + '>CCcam 2.2.1 (Build 3316 - Legacy)</option>' +
+                                '<option value="2.1.4"' + ((s.cccam_version === '2.1.4') ? ' selected' : '') + '>CCcam 2.1.4 (Build 3191 - Classic Estable)</option>' +
+                                '<option value="2.1.3"' + ((s.cccam_version === '2.1.3') ? ' selected' : '') + '>CCcam 2.1.3 (Build 3165 - Legacy)</option>' +
+                                '<option value="2.0.11"' + ((s.cccam_version === '2.0.11') ? ' selected' : '') + '>CCcam 2.0.11 (Build 2892 - Dreambox)</option>' +
+                                '<option value="CUSTOM"' + ((s.cccam_version && ['2.3.8','2.3.2','2.3.0','2.2.1','2.1.4','2.1.3','2.0.11'].indexOf(s.cccam_version) < 0) ? ' selected' : '') + '>Personalizada / Manual</option>' +
+                            '</select>' +
+                        '</div>' +
+                        '<div><label style="font-size:11px; color:#F59E0B; font-weight:700;">CCcam Build / Rev</label>' +
+                            '<input type="text" class="srv-cccam-bld" value="' + (s.cccam_build || '3367') + '" placeholder="3367">' +
+                        '</div>' +
+                    '</div>' +
                     '<div style="margin-top:12px; display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; background:rgba(255,255,255,0.02); padding:10px 14px; border-radius:8px; border:1px solid rgba(255,255,255,0.05);">' +
                         '<div><label style="font-size:11px; color:#94A3B8;">Connect Timeout (s)</label><input type="number" class="srv-conn-timeout" value="' + (s.connect_timeout_sec || 4) + '"></div>' +
                         '<div><label style="font-size:11px; color:#94A3B8;">Recv Timeout (s)</label><input type="number" class="srv-recv-timeout" value="' + (s.recv_timeout_sec || 8) + '"></div>' +
@@ -4877,11 +4945,16 @@ class OscamLocalConfigWebServer(
             var credsRow = card.querySelector('.srv-creds-row-' + idx);
             var passDiv = card.querySelector('.srv-pass-div-' + idx);
             var desDiv = card.querySelector('.srv-des-div-' + idx);
+            var cccamDiv = card.querySelector('.srv-cccam-row-' + idx);
             var badgeEl = card.querySelector('.srv-proto-badge');
 
             if (badgeEl) {
                 badgeEl.innerText = proto;
                 badgeEl.style.cssText = 'background:' + getProtocolBadgeStyle(proto) + '; padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;';
+            }
+
+            if (cccamDiv) {
+                cccamDiv.style.display = (proto === 'CCCAM') ? 'grid' : 'none';
             }
 
             if (proto === 'DVBAPI_UNIX') {
@@ -4915,6 +4988,26 @@ class OscamLocalConfigWebServer(
             }
         }
 
+        function onCccamVerChange(idx) {
+            var card = document.getElementById('srv-box-' + idx);
+            if (!card) return;
+            var verEl = card.querySelector('.srv-cccam-ver');
+            var bldEl = card.querySelector('.srv-cccam-bld');
+            if (!verEl || !bldEl) return;
+            var builds = {
+                '2.3.8': '4200',
+                '2.3.2': '4000',
+                '2.3.0': '3367',
+                '2.2.1': '3316',
+                '2.1.4': '3191',
+                '2.1.3': '3165',
+                '2.0.11': '2892'
+            };
+            if (builds[verEl.value]) {
+                bldEl.value = builds[verEl.value];
+            }
+        }
+
         function addServerCard(proto) {
             proto = proto || 'CCCAM';
             var defaultPort = getDefaultPortForProto(proto);
@@ -4927,6 +5020,8 @@ class OscamLocalConfigWebServer(
                 user: 'android_tv',
                 password: 'android_tv',
                 des_key: '0102030405060708091011121314',
+                cccam_version: '2.3.0',
+                cccam_build: '3367',
                 caid: '0x1810',
                 connect_timeout_sec: 4,
                 recv_timeout_sec: 8,
@@ -4950,6 +5045,8 @@ class OscamLocalConfigWebServer(
                 user: 'android_tv',
                 password: 'android_tv',
                 des_key: '0102030405060708091011121314',
+                cccam_version: '2.3.0',
+                cccam_build: '3367',
                 caid: caid,
                 connect_timeout_sec: 4,
                 recv_timeout_sec: 8,
@@ -4967,6 +5064,119 @@ class OscamLocalConfigWebServer(
             renderServerCards(currentServers);
         }
 
+        function openClineImportModal() {
+            var m = document.getElementById('modal-cline-import');
+            if (m) m.style.display = 'flex';
+            var ta = document.getElementById('cline-textarea');
+            if (ta) ta.focus();
+        }
+
+        function closeClineImportModal() {
+            var m = document.getElementById('modal-cline-import');
+            if (m) m.style.display = 'none';
+        }
+
+        function parseAndImportClines() {
+            var defaultVerEl = document.getElementById('cline-default-version');
+            var defaultVer = defaultVerEl ? defaultVerEl.value : '2.3.0';
+            var builds = {
+                '2.3.8': '4200',
+                '2.3.2': '4000',
+                '2.3.0': '3367',
+                '2.2.1': '3316',
+                '2.1.4': '3191',
+                '2.1.3': '3165',
+                '2.0.11': '2892'
+            };
+            var defaultBuild = builds[defaultVer] || '3367';
+
+            var textarea = document.getElementById('cline-textarea');
+            if (!textarea) return;
+            var text = textarea.value;
+            if (!text || !text.trim()) {
+                showAlert('Por favor, pega al menos una línea C: de CCcam.', 'warning');
+                return;
+            }
+
+            var lines = text.split('\n');
+            var importedCount = 0;
+
+            for (var i = 0; i < lines.length; i++) {
+                var raw = lines[i].trim();
+                if (!raw || raw.startsWith('#') || raw.startsWith(';')) continue;
+
+                var targetCaid = '0x1810';
+                var caidMatch = raw.match(/\{\s*([0-9a-fA-F]{4}):/);
+                if (caidMatch && caidMatch[1]) {
+                    targetCaid = '0x' + caidMatch[1].toUpperCase();
+                }
+
+                var cleanLine = raw.replace(/\{[^}]*\}/g, '').trim();
+
+                if (cleanLine.toLowerCase().startsWith('c:')) {
+                    cleanLine = cleanLine.substring(2).trim();
+                } else if (cleanLine.toLowerCase().startsWith('c ')) {
+                    cleanLine = cleanLine.substring(2).trim();
+                }
+
+                var tokens = cleanLine.split(/\s+/).filter(function(t) { return t.length > 0; });
+                if (tokens.length < 4) continue;
+
+                var host = tokens[0];
+                var port = parseInt(tokens[1], 10) || 12000;
+                var user = tokens[2];
+                var pass = tokens[3];
+
+                var version = defaultVer;
+                var build = defaultBuild;
+
+                for (var t = 4; t < tokens.length; t++) {
+                    var tok = tokens[t];
+                    if (tok === 'yes' || tok === 'no' || tok === 'wantemu') {
+                        continue;
+                    }
+                    if (/^\d+\.\d+(\.\d+)?$/.test(tok)) {
+                        version = tok;
+                        if (builds[version]) {
+                            build = builds[version];
+                        }
+                    } else if (/^\d{3,5}$/.test(tok) && version !== defaultVer) {
+                        build = tok;
+                    }
+                }
+
+                var s = {
+                    name: 'CCcam ' + host + ':' + port,
+                    protocol: 'CCCAM',
+                    host: host,
+                    port: port,
+                    user: user,
+                    password: pass,
+                    des_key: '0102030405060708091011121314',
+                    cccam_version: version,
+                    cccam_build: build,
+                    caid: targetCaid,
+                    connect_timeout_sec: 4,
+                    recv_timeout_sec: 8,
+                    reconnect_interval_ms: 2000,
+                    enabled: true,
+                    is_primary: (currentServers.length === 0)
+                };
+
+                currentServers.push(s);
+                importedCount++;
+            }
+
+            if (importedCount > 0) {
+                renderServerCards(currentServers);
+                closeClineImportModal();
+                textarea.value = '';
+                showAlert('✓ ' + importedCount + ' Cline(s) importada(s) con éxito a la lista de servidores.', 'success');
+            } else {
+                showAlert('No se pudieron extraer Clines válidas. Revisa el formato (ej: C: host 12000 user pass)', 'error');
+            }
+        }
+
         function pingServer(idx) {
             var card = document.getElementById('srv-box-' + idx);
             if (!card) return;
@@ -4976,6 +5186,8 @@ class OscamLocalConfigWebServer(
             var userEl = card.querySelector('.srv-user');
             var passEl = card.querySelector('.srv-pass');
             var desEl = card.querySelector('.srv-des');
+            var cccamVerEl = card.querySelector('.srv-cccam-ver');
+            var cccamBldEl = card.querySelector('.srv-cccam-bld');
 
             var host = hostEl ? hostEl.value : '127.0.0.1';
             var port = portEl ? (parseInt(portEl.value, 10) || 9000) : 9000;
@@ -4983,16 +5195,27 @@ class OscamLocalConfigWebServer(
             var user = userEl ? userEl.value : '';
             var pass = passEl ? passEl.value : '';
             var des = desEl ? desEl.value : '';
+            var cccamVer = (proto === 'CCCAM' && cccamVerEl) ? cccamVerEl.value : '2.3.0';
+            var cccamBld = (proto === 'CCCAM' && cccamBldEl) ? cccamBldEl.value : '3367';
             var statusDiv = document.getElementById('ping-status-' + idx);
             if (!statusDiv) return;
 
             statusDiv.style.color = 'var(--warning)';
-            statusDiv.innerText = 'Testing ' + proto + ' connection to ' + host + (proto === 'DVBAPI_UNIX' ? '' : ':' + port) + '...';
+            statusDiv.innerText = 'Testing ' + proto + (proto === 'CCCAM' ? ' v' + cccamVer : '') + ' connection to ' + host + (proto === 'DVBAPI_UNIX' ? '' : ':' + port) + '...';
 
             fetch('/api/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ host: host, port: port, protocol: proto, user: user, password: pass, des_key: des })
+                body: JSON.stringify({
+                    host: host,
+                    port: port,
+                    protocol: proto,
+                    user: user,
+                    password: pass,
+                    des_key: des,
+                    cccam_version: cccamVer,
+                    cccam_build: cccamBld
+                })
             })
             .then(function(r) { return r.json(); })
             .then(function(res) {
@@ -6671,6 +6894,8 @@ class OscamLocalConfigWebServer(
                 var userEl = card.querySelector('.srv-user');
                 var passEl = card.querySelector('.srv-pass');
                 var desEl = card.querySelector('.srv-des');
+                var cccamVerEl = card.querySelector('.srv-cccam-ver');
+                var cccamBldEl = card.querySelector('.srv-cccam-bld');
                 var caidEl = card.querySelector('.srv-caid');
                 var connTimeoutEl = card.querySelector('.srv-conn-timeout');
                 var recvTimeoutEl = card.querySelector('.srv-recv-timeout');
@@ -6691,6 +6916,8 @@ class OscamLocalConfigWebServer(
                     user: userEl ? userEl.value : 'android_tv',
                     password: passEl ? passEl.value : 'android_tv',
                     des_key: desEl ? desEl.value : '0102030405060708091011121314',
+                    cccam_version: (protoVal === 'CCCAM' && cccamVerEl) ? cccamVerEl.value : '2.3.0',
+                    cccam_build: (protoVal === 'CCCAM' && cccamBldEl) ? cccamBldEl.value : '3367',
                     caid: caidEl ? caidEl.value : '0x1810',
                     connect_timeout_sec: connTimeoutEl ? (parseInt(connTimeoutEl.value, 10) || 4) : 4,
                     recv_timeout_sec: recvTimeoutEl ? (parseInt(recvTimeoutEl.value, 10) || 8) : 8,

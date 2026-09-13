@@ -136,6 +136,9 @@ std::shared_ptr<IOscamClient> OscamConnectionManager::createClientForProfile(con
             cfg.port = profile.port;
             cfg.user = profile.user;
             cfg.password = profile.password;
+            if (!profile.cccamVersion.empty()) cfg.version = profile.cccamVersion;
+            if (!profile.cccamBuild.empty()) cfg.build = profile.cccamBuild;
+            cfg.wantEmu = profile.cccamWantEmu;
             cfg.caid = profile.caid;
             cfg.connectTimeoutSec = profile.connectTimeoutSec;
             cfg.recvTimeoutSec = profile.recvTimeoutSec;
@@ -297,6 +300,9 @@ bool OscamConnectionManager::testServer(const ServerProfile& profile, int timeou
         case ProtocolType::CCCAM: {
             std::string err;
             bool ok = cccam::CCcamClient::testConnection(profile.host, profile.port, profile.user, profile.password, timeoutMs, err);
+            bool ok = cccam::CCcamClient::testConnection(
+                profile.host, profile.port, profile.user, profile.password,
+                profile.cccamVersion, profile.cccamBuild, timeoutMs, err);
             outResult = ok ? "CCcam handshake OK" : err;
             return ok;
         }

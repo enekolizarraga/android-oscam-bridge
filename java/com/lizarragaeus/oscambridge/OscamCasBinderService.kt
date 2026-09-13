@@ -293,12 +293,15 @@ open class OscamCasBinderService : Service(), OscamNativeBridge.NativeCallback {
 
                 val caidIntArray = config.caids.toIntArray()
                 val initOk = OscamNativeBridge.nativeInitEx(
+                val initOk = OscamNativeBridge.nativeInitFull(
                     primary.host,
                     primary.port,
                     primary.protocol.id,
                     primary.user,
                     primary.password,
                     primary.desKey,
+                    primary.cccamVersion,
+                    primary.cccamBuild,
                     caidIntArray
                 )
 

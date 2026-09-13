@@ -36,6 +36,9 @@ struct ServerProfile {
     std::string   user{"android_tv"};
     std::string   password{"android_tv"};
     std::string   desKey{"0102030405060708091011121314"};
+    std::string   cccamVersion{"2.3.0"};
+    std::string   cccamBuild{"3367"};
+    uint8_t       cccamWantEmu{0};
     uint16_t      caid{0x1810};
     int           connectTimeoutSec{4};
     int           recvTimeoutSec{8};

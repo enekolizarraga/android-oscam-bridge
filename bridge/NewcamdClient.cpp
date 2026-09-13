@@ -371,6 +371,11 @@ bool NewcamdClient::connectAndLogin(int& socketFd) {
     }
     freeaddrinfo(res);
 
+    int nodelay = 1;
+    setsockopt(socketFd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+    int keepalive = 1;
+    setsockopt(socketFd, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&keepalive), sizeof(keepalive));
+
     // Step 1: Read 14-byte random key initialization vector from Newcamd server
     uint8_t serverRandomKey[14];
     if (!readFull(socketFd, serverRandomKey, 14)) {
@@ -523,8 +528,10 @@ void NewcamdClient::workerLoop() {
             }
 
             // Keepalive every 50 seconds
+            // Keepalive every 25 seconds to maintain router NAT state
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::seconds>(now - lastKeepalive).count() >= 50) {
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - lastKeepalive).count() >= 25) {
                 uint8_t ping[3] = { 0x00, 0x01, 0x00 };
                 writeFull(socketFd, ping, 3);
                 lastKeepalive = now;

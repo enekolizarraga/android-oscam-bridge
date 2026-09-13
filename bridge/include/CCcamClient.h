@@ -35,6 +35,9 @@ struct CCcamConfig {
     uint16_t port{12000};
     std::string user{"android_tv"};
     std::string password{"android_tv"};
+    std::string version{"2.3.0"};
+    std::string build{"3367"};
+    uint8_t wantEmu{0};
     uint16_t caid{0x1810};
     int connectTimeoutSec{4};
     int recvTimeoutSec{8};
@@ -109,9 +112,22 @@ public:
         uint16_t port,
         const std::string& user,
         const std::string& password,
+        const std::string& version,
+        const std::string& build,
         int timeoutMs,
         std::string& outError
     );
+
+    static bool testConnection(
+        const std::string& host,
+        uint16_t port,
+        const std::string& user,
+        const std::string& password,
+        int timeoutMs,
+        std::string& outError
+    ) {
+        return testConnection(host, port, user, password, "2.3.0", "3367", timeoutMs, outError);
+    }
 
     // Cryptographic utility helpers (publicly exposed for testing & compliance)
     static void ccInitCrypt(CcCryptBlock* block, const uint8_t* key, size_t keyLen);

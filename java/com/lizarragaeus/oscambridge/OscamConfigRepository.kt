@@ -111,6 +111,8 @@ data class OscamServerEntry(
     val user: String = "android_tv",
     val password: String = "android_tv",
     val desKey: String = "0102030405060708091011121314",
+    val cccamVersion: String = "2.3.0",
+    val cccamBuild: String = "3367",
     val caid: Int = 0x1810,
     val connectTimeoutSec: Int = 4,
     val recvTimeoutSec: Int = 8,
@@ -504,6 +506,8 @@ class OscamConfigRepository(private val context: Context) {
                 put("user", server.user)
                 put("password", server.password)
                 put("des_key", server.desKey)
+                put("cccam_version", server.cccamVersion)
+                put("cccam_build", server.cccamBuild)
                 put("caid", server.caid)
                 put("connect_timeout_sec", server.connectTimeoutSec)
                 put("recv_timeout_sec", server.recvTimeoutSec)
@@ -534,6 +538,8 @@ class OscamConfigRepository(private val context: Context) {
                         user = obj.optString("user", "android_tv"),
                         password = obj.optString("password", "android_tv"),
                         desKey = obj.optString("des_key", "0102030405060708091011121314"),
+                        cccamVersion = obj.optString("cccam_version", "2.3.0"),
+                        cccamBuild = obj.optString("cccam_build", "3367"),
                         caid = obj.optInt("caid", 0x1810),
                         connectTimeoutSec = obj.optInt("connect_timeout_sec", 4),
                         recvTimeoutSec = obj.optInt("recv_timeout_sec", 8),

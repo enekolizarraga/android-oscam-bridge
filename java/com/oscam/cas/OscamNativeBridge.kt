@@ -49,11 +49,13 @@ object OscamNativeBridge {
     // Native methods implemented in com_oscam_cas_OscamCasPlugin.cpp
     external fun nativeInit(host: String, port: Int, caids: IntArray): Boolean
     external fun nativeInitEx(host: String, port: Int, protocol: Int, user: String, password: String, desKey: String, caids: IntArray): Boolean
+    external fun nativeInitFull(host: String, port: Int, protocol: Int, user: String, password: String, desKey: String, cccamVersion: String, cccamBuild: String, caids: IntArray): Boolean
     external fun nativeStart(): Boolean
     external fun nativeStop()
     external fun nativeGetStatus(): Int
     external fun nativeTestConnection(host: String, port: Int, timeoutMs: Int): Boolean
     external fun nativeTestConnectionEx(host: String, port: Int, protocol: Int, user: String, password: String, desKey: String, timeoutMs: Int): String
+    external fun nativeTestConnectionFull(host: String, port: Int, protocol: Int, user: String, password: String, desKey: String, cccamVersion: String, cccamBuild: String, timeoutMs: Int): String
     external fun nativeQueryWebIfStatus(host: String, port: Int, user: String, password: String): String
     external fun nativeFailoverNext(): Boolean
     external fun nativeGetActiveServerDescription(): String

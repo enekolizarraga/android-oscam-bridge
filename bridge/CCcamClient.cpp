@@ -358,6 +358,8 @@ bool CCcamClient::connectAndLogin(int& socketFd) {
     // Disable Nagle's algorithm for low-latency Control Word delivery
     int nodelay = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+    int keepalive = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&keepalive), sizeof(keepalive));
 
     // CCcam Handshake (strictly compliant with CCcam 2.x & OSCam module-cccam.c specification):
     // Step 1: Read 16-byte random seed from server
@@ -456,6 +458,11 @@ bool CCcamClient::connectAndLogin(int& socketFd) {
     cliData[28] = 0; // want_emu = 0
     std::memcpy(cliData + 29, "2.3.0", 5);
     std::memcpy(cliData + 61, "3367", 4);
+    cliData[28] = config_.wantEmu; // 0 = standard, 1 = want EMU
+    std::string ver = config_.version.empty() ? "2.3.0" : config_.version;
+    std::string bld = config_.build.empty() ? "3367" : config_.build;
+    std::memcpy(cliData + 29, ver.data(), std::min(ver.size(), size_t(31)));
+    std::memcpy(cliData + 61, bld.data(), std::min(bld.size(), size_t(31)));
     if (!sendMsg(fd, 0x00, cliData, cliDataSize)) { // MSG_CLI_DATA
 #ifdef _WIN32
         closesocket(fd);
@@ -549,8 +556,41 @@ void CCcamClient::workerLoop() {
                 uint64_t nodeId64 = 0;
                 for (int i = 0; i < 8; ++i) {
                     nodeId64 = (nodeId64 << 8) | clientNodeId_[i];
+                // Check if payload is all zeros (ECM rejected / not found by server)
+                bool isAllZero = true;
+                for (size_t i = 0; i < 16; ++i) {
+                    if (payload[i] != 0) { isAllZero = false; break; }
                 }
                 ccCwCrypt(payload.data(), nodeId64, 0);
+                if (isAllZero) {
+                    BRIDGE_LOGD("CCcamClient: Received null CW from server (service not decoded or rejected)");
+                    continue;
+                }
+
+                // DVB-CSA Checksum verification lambda:
+                // cw[3] = (cw[0]+cw[1]+cw[2]) & 0xFF; cw[7] = (cw[4]+cw[5]+cw[6]) & 0xFF
+                auto isDvbChecksumOk = [](const uint8_t* cw) -> bool {
+                    return (cw[3] == static_cast<uint8_t>((cw[0] + cw[1] + cw[2]) & 0xFF)) &&
+                           (cw[7] == static_cast<uint8_t>((cw[4] + cw[5] + cw[6]) & 0xFF));
+                };
+
+                // If server returned plain CWs that already satisfy DVB-CSA checksums,
+                // we do not re-crypt with node ID.
+                bool directValid = isDvbChecksumOk(payload.data()) && isDvbChecksumOk(payload.data() + 8);
+                if (!directValid) {
+                    // Try node ID decoding
+                    uint8_t decodedCw[16];
+                    std::memcpy(decodedCw, payload.data(), 16);
+                    uint64_t nodeId64 = 0;
+                    for (int i = 0; i < 8; ++i) {
+                        nodeId64 = (nodeId64 << 8) | clientNodeId_[i];
+                    }
+                    ccCwCrypt(decodedCw, nodeId64, 0);
+
+                    if (isDvbChecksumOk(decodedCw) || isDvbChecksumOk(decodedCw + 8)) {
+                        std::memcpy(payload.data(), decodedCw, 16);
+                    }
+                }
 
                 const uint8_t* evenCw = payload.data();
                 const uint8_t* oddCw  = payload.data() + 8;
@@ -567,8 +607,10 @@ void CCcamClient::workerLoop() {
             }
 
             // Periodic client keepalive every 45 seconds (MSG_KEEPALIVE = 0x06)
+            // Periodic client keepalive every 25 seconds (MSG_KEEPALIVE = 0x06) to maintain NAT mapping
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::seconds>(now - lastKeepalive).count() >= 45) {
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - lastKeepalive).count() >= 25) {
                 sendMsg(socketFd, 0x06, nullptr, 0);
                 lastKeepalive = now;
             }
@@ -603,6 +645,8 @@ bool CCcamClient::testConnection(
     uint16_t port,
     const std::string& user,
     const std::string& password,
+    const std::string& version,
+    const std::string& build,
     int timeoutMs,
     std::string& outError
 ) {
@@ -611,6 +655,8 @@ bool CCcamClient::testConnection(
     cfg.port = port;
     cfg.user = user;
     cfg.password = password;
+    cfg.version = version.empty() ? "2.3.0" : version;
+    cfg.build = build.empty() ? "3367" : build;
     cfg.connectTimeoutSec = std::max(1, timeoutMs / 1000);
 
     CCcamCallbacks cbs;
@@ -628,6 +674,7 @@ bool CCcamClient::testConnection(
 
     if (!ok) {
         outError = "CCcam: Connection refused or authentication failed (check host, port, user and password)";
+        outError = "CCcam: Connection refused or authentication failed (check host, port, user, password and version)";
     }
     return ok;
 }
